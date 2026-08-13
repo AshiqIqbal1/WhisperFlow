@@ -45,58 +45,66 @@ endif()
 
 qt_add_executable(WhisperFlow
     WIN32 MACOSX_BUNDLE
-    main.cpp
-    mainwindow.h
-    mainwindow.cpp
-    theme.h
-    theme.cpp
-    icons.h
-    icons.cpp
-    recordbutton.h
-    recordbutton.cpp
-    transcriptcard.h
-    transcriptcard.cpp
-    settingsdialog.h
-    settingsdialog.cpp
-    modelcatalog.h
-    modelcatalog.cpp
-    modelmanager.h
-    modelmanager.cpp
-    whisperengine.h
-    whisperengine.cpp
-    audiorecorder.h
-    audiorecorder.cpp
-    audioclipstore.h
-    audioclipstore.cpp
-    audiofiledecoder.h
-    audiofiledecoder.cpp
-    transcriptstore.h
-    transcriptstore.cpp
-    globalhotkey.h
+    src/main.cpp
+    src/ui/mainwindow.h
+    src/ui/mainwindow.cpp
+    src/ui/theme.h
+    src/ui/theme.cpp
+    src/ui/icons.h
+    src/ui/icons.cpp
+    src/ui/recordbutton.h
+    src/ui/recordbutton.cpp
+    src/ui/transcriptcard.h
+    src/ui/transcriptcard.cpp
+    src/ui/settingsdialog.h
+    src/ui/settingsdialog.cpp
+    src/core/modelcatalog.h
+    src/core/modelcatalog.cpp
+    src/core/modelmanager.h
+    src/core/modelmanager.cpp
+    src/core/whisperengine.h
+    src/core/whisperengine.cpp
+    src/core/audiorecorder.h
+    src/core/audiorecorder.cpp
+    src/core/audioclipstore.h
+    src/core/audioclipstore.cpp
+    src/core/audiofiledecoder.h
+    src/core/audiofiledecoder.cpp
+    src/core/transcriptstore.h
+    src/core/transcriptstore.cpp
+    src/platform/globalhotkey.h
+)
+
+# Headers include each other by bare name ("theme.h") regardless of layer.
+target_include_directories(WhisperFlow PRIVATE
+    src
+    src/ui
+    src/core
+    src/platform
 )
 
 # Global hotkey needs a native, OS-specific backend. Carbon's hotkey API is
 # plain C — no Objective-C needed — and is what most macOS menu-bar utilities
 # still use for a systemwide shortcut that needs no Accessibility permission.
 if(APPLE)
-    target_sources(WhisperFlow PRIVATE globalhotkey_mac.cpp)
+    target_sources(WhisperFlow PRIVATE src/platform/globalhotkey_mac.cpp)
     target_link_libraries(WhisperFlow PRIVATE "-framework Carbon")
     # Custom Info.plist: NSMicrophoneUsageDescription is mandatory for mic
     # capture — without it macOS never even shows the permission prompt.
     set_target_properties(WhisperFlow PROPERTIES
-        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/Info.plist.in"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.ashiqiqbal.whisperflow"
         MACOSX_BUNDLE_BUNDLE_NAME "WhisperFlow"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0"
         MACOSX_BUNDLE_BUNDLE_VERSION "1"
     )
 elseif(WIN32)
-    target_sources(WhisperFlow PRIVATE globalhotkey_win.cpp)
+    target_sources(WhisperFlow PRIVATE src/platform/globalhotkey_win.cpp)
 endif()
 
 qt_add_translations(
     TARGETS WhisperFlow
-    TS_FILES WhisperFlow_en_AU.ts
+    TS_FILES i18n/WhisperFlow_en_AU.ts
 )
 
 target_link_libraries(WhisperFlow
