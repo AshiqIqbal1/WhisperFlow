@@ -2,6 +2,7 @@
 
 #include <QAudioSource>
 #include <QMediaDevices>
+#include <QSettings>
 #include <QtEndian>
 
 #include <algorithm>
@@ -11,15 +12,43 @@ namespace {
 
 constexpr int kTargetRate = 16000;
 
-// One-shot linear resampler — used only when the input device won't give us
-// 16kHz natively. Runs once over the whole buffer at stop(), not per-chunk,
-// so there's no cross-chunk phase state to track.
-std::vector<float> resampleLinear(const std::vector<float> &in, double srcRate, double dstRate)
+// 4th-order Butterworth low-pass (two cascaded biquads), applied in place.
+// Downsampling without this aliases everything above the new Nyquist back
+// into the speech band — the classic "underwater/garbled" recording.
+void lowPass(std::vector<float> &samples, double srcRate, double cutoffHz)
+{
+    const double w0 = 2.0 * M_PI * cutoffHz / srcRate;
+    const double cosw = std::cos(w0), sinw = std::sin(w0);
+
+    // Q values for a 4th-order Butterworth split into two biquads.
+    for (const double q : {0.54119610, 1.30656296}) {
+        const double alpha = sinw / (2.0 * q);
+        const double b0 = (1.0 - cosw) / 2.0, b1 = 1.0 - cosw, b2 = b0;
+        const double a0 = 1.0 + alpha, a1 = -2.0 * cosw, a2 = 1.0 - alpha;
+
+        double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+        for (float &s : samples) {
+            const double x = s;
+            const double y = (b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0;
+            x2 = x1; x1 = x;
+            y2 = y1; y1 = y;
+            s = float(y);
+        }
+    }
+}
+
+// One-shot resampler — used only when the input device won't give us 16kHz
+// natively. Low-pass first (anti-aliasing), then linear interpolation. Runs
+// once over the whole buffer at stop(), not per-chunk.
+std::vector<float> resampleLinear(std::vector<float> in, double srcRate, double dstRate)
 {
     if (in.empty() || srcRate <= 0.0)
         return {};
     if (qFuzzyCompare(srcRate, dstRate))
         return in;
+
+    if (srcRate > dstRate)
+        lowPass(in, srcRate, 0.45 * dstRate); // keep speech, kill aliases
 
     const double ratio = srcRate / dstRate;
     const size_t outCount = static_cast<size_t>(in.size() / ratio);
@@ -71,7 +100,19 @@ bool AudioRecorder::start()
     if (m_source)
         return true; // already recording
 
-    const QAudioDevice device = QMediaDevices::defaultAudioInput();
+    // Honor the mic picked in the footer menu; fall back to the system
+    // default when unset or when that device is gone (unplugged USB mic).
+    QAudioDevice device = QMediaDevices::defaultAudioInput();
+    const QByteArray wantedId = QSettings().value(QStringLiteral("inputDeviceId")).toByteArray();
+    if (!wantedId.isEmpty()) {
+        const auto all = QMediaDevices::audioInputs();
+        for (const QAudioDevice &d : all) {
+            if (d.id() == wantedId) {
+                device = d;
+                break;
+            }
+        }
+    }
     if (device.isNull()) {
         m_lastError = QStringLiteral("No microphone found");
         return false;
@@ -160,7 +201,7 @@ std::vector<float> AudioRecorder::stop()
 
     std::vector<float> result = m_format.sampleRate() == kTargetRate
         ? std::move(m_samples)
-        : resampleLinear(m_samples, m_format.sampleRate(), kTargetRate);
+        : resampleLinear(std::move(m_samples), m_format.sampleRate(), kTargetRate);
 
     m_samples.clear();
     m_pending.clear();

@@ -17,6 +17,7 @@
 #include "whisperengine.h"
 
 #include <QApplication>
+#include <QAudioDevice>
 #include <QAudioOutput>
 #include <QClipboard>
 #include <QCloseEvent>
@@ -27,7 +28,9 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMediaDevices>
 #include <QMediaPlayer>
+#include <QMenu>
 #include <QMimeData>
 #include <QScrollArea>
 #include <QSettings>
@@ -273,6 +276,37 @@ QWidget *MainWindow::buildFooter()
     m_hint->setObjectName(QStringLiteral("hint"));
     bottomRow->addWidget(m_hint);
     bottomRow->addStretch(1);
+
+    auto *mic = new QToolButton(wrap);
+    mic->setObjectName(QStringLiteral("footerBtn"));
+    mic->setIcon(Icons::icon(Icons::Mic, Theme::TextMuted, 16));
+    mic->setToolTip(tr("Input device"));
+    connect(mic, &QToolButton::clicked, this, [this, mic] {
+        // Fresh menu on every click — device list changes as mics (un)plug.
+        QMenu menu(this);
+        const QByteArray currentId = QSettings().value(QStringLiteral("inputDeviceId")).toByteArray();
+
+        auto *systemDefault = menu.addAction(tr("System default"));
+        systemDefault->setCheckable(true);
+        systemDefault->setChecked(currentId.isEmpty());
+        connect(systemDefault, &QAction::triggered, this, [this] {
+            QSettings().remove(QStringLiteral("inputDeviceId"));
+            flashStatus(tr("Microphone: system default"));
+        });
+
+        const auto devices = QMediaDevices::audioInputs();
+        for (const QAudioDevice &d : devices) {
+            auto *act = menu.addAction(d.description());
+            act->setCheckable(true);
+            act->setChecked(d.id() == currentId);
+            connect(act, &QAction::triggered, this, [this, d] {
+                QSettings().setValue(QStringLiteral("inputDeviceId"), d.id());
+                flashStatus(tr("Microphone: %1").arg(d.description()));
+            });
+        }
+        menu.exec(mic->mapToGlobal(QPoint(0, -menu.sizeHint().height() - 4)));
+    });
+    bottomRow->addWidget(mic);
 
     auto *trash = new QToolButton(wrap);
     trash->setObjectName(QStringLiteral("footerBtn"));
