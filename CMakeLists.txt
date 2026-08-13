@@ -1,15 +1,40 @@
 cmake_minimum_required(VERSION 3.19)
 project(WhisperFlow LANGUAGES CXX)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Svg LinguistTools)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Svg Network Multimedia Concurrent LinguistTools)
 
 qt_standard_project_setup()
+
+# ---------------------------------------------------------------------------
+# whisper.cpp — vendored via FetchContent, pinned to a tagged release so the
+# C API can't drift out from under mainwindow/whisperengine.
+# Metal/CUDA/BLAS backends are left off: CPU-only keeps the exact same build
+# working unmodified on the Windows laptop, at the cost of raw speed. Turn
+# GGML_METAL back on for Mac-only builds later if you want it faster.
+# ---------------------------------------------------------------------------
+include(FetchContent)
+
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GGML_METAL OFF CACHE BOOL "" FORCE)
+set(GGML_BLAS OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+    whisper_cpp
+    GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp.git
+    GIT_TAG        v1.9.2
+)
+FetchContent_MakeAvailable(whisper_cpp)
 
 qt_add_executable(WhisperFlow
     WIN32 MACOSX_BUNDLE
     main.cpp
-    mainwindow.cpp
     mainwindow.h
+    mainwindow.cpp
     theme.h
     theme.cpp
     icons.h
@@ -18,7 +43,43 @@ qt_add_executable(WhisperFlow
     recordbutton.cpp
     transcriptcard.h
     transcriptcard.cpp
+    settingsdialog.h
+    settingsdialog.cpp
+    modelcatalog.h
+    modelcatalog.cpp
+    modelmanager.h
+    modelmanager.cpp
+    whisperengine.h
+    whisperengine.cpp
+    audiorecorder.h
+    audiorecorder.cpp
+    audioclipstore.h
+    audioclipstore.cpp
+    audiofiledecoder.h
+    audiofiledecoder.cpp
+    transcriptstore.h
+    transcriptstore.cpp
+    globalhotkey.h
 )
+
+# Global hotkey needs a native, OS-specific backend. Carbon's hotkey API is
+# plain C — no Objective-C needed — and is what most macOS menu-bar utilities
+# still use for a systemwide shortcut that needs no Accessibility permission.
+if(APPLE)
+    target_sources(WhisperFlow PRIVATE globalhotkey_mac.cpp)
+    target_link_libraries(WhisperFlow PRIVATE "-framework Carbon")
+    # Custom Info.plist: NSMicrophoneUsageDescription is mandatory for mic
+    # capture — without it macOS never even shows the permission prompt.
+    set_target_properties(WhisperFlow PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.ashiqiqbal.whisperflow"
+        MACOSX_BUNDLE_BUNDLE_NAME "WhisperFlow"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1"
+    )
+elseif(WIN32)
+    target_sources(WhisperFlow PRIVATE globalhotkey_win.cpp)
+endif()
 
 qt_add_translations(
     TARGETS WhisperFlow
@@ -30,6 +91,10 @@ target_link_libraries(WhisperFlow
         Qt::Core
         Qt::Widgets
         Qt::Svg
+        Qt::Network
+        Qt::Multimedia
+        Qt::Concurrent
+        whisper
 )
 
 install(TARGETS WhisperFlow

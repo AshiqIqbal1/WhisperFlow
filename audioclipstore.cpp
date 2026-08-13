@@ -1,0 +1,93 @@
+#include "audioclipstore.h"
+
+#include <QDataStream>
+#include <QDir>
+#include <QFile>
+#include <QStandardPaths>
+#include <QtEndian>
+
+#include <algorithm>
+
+namespace {
+
+constexpr quint32 kSampleRate = 16000;
+constexpr quint16 kChannels = 1;
+constexpr quint16 kBitsPerSample = 16;
+
+QString audioDir()
+{
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    const QString dir = QDir(base).filePath(QStringLiteral("audio"));
+    QDir().mkpath(dir);
+    return dir;
+}
+
+} // namespace
+
+QString AudioClipStore::path(const QString &id)
+{
+    return QDir(audioDir()).filePath(id + QStringLiteral(".wav"));
+}
+
+bool AudioClipStore::exists(const QString &id)
+{
+    return QFile::exists(path(id));
+}
+
+bool AudioClipStore::save(const QString &id, const std::vector<float> &samples)
+{
+    QFile file(path(id));
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+
+    QDataStream out(&file);
+    out.setByteOrder(QDataStream::LittleEndian);
+
+    const quint32 dataBytes = quint32(samples.size()) * sizeof(qint16);
+    const quint32 byteRate = kSampleRate * kChannels * kBitsPerSample / 8;
+
+    // Canonical 44-byte PCM WAV header.
+    file.write("RIFF", 4);
+    out << quint32(36 + dataBytes);
+    file.write("WAVE", 4);
+    file.write("fmt ", 4);
+    out << quint32(16);                                   // fmt chunk size
+    out << quint16(1);                                    // PCM
+    out << kChannels;
+    out << kSampleRate;
+    out << byteRate;
+    out << quint16(kChannels * kBitsPerSample / 8);       // block align
+    out << kBitsPerSample;
+    file.write("data", 4);
+    out << dataBytes;
+
+    for (float s : samples)
+        out << qint16(std::clamp(s, -1.0f, 1.0f) * 32767.0f);
+
+    return true;
+}
+
+std::vector<float> AudioClipStore::load(const QString &id)
+{
+    QFile file(path(id));
+    if (!file.open(QIODevice::ReadOnly) || file.size() <= 44)
+        return {};
+
+    // We only ever read files we wrote, so a fixed 44-byte header skip is
+    // safe here — this is not a general-purpose WAV parser.
+    file.seek(44);
+    const QByteArray raw = file.readAll();
+
+    const qint16 *pcm = reinterpret_cast<const qint16 *>(raw.constData());
+    const size_t count = size_t(raw.size()) / sizeof(qint16);
+
+    std::vector<float> samples(count);
+    for (size_t i = 0; i < count; ++i)
+        samples[i] = qFromLittleEndian<qint16>(&pcm[i]) / 32768.0f;
+    return samples;
+}
+
+void AudioClipStore::remove(const QString &id)
+{
+    QFile::remove(path(id));
+}

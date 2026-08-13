@@ -1,11 +1,22 @@
 #include "mainwindow.h"
 
+#include "audioclipstore.h"
+#include "audiofiledecoder.h"
+#include "audiorecorder.h"
+#include "globalhotkey.h"
 #include "icons.h"
+#include "modelcatalog.h"
+#include "modelmanager.h"
 #include "recordbutton.h"
+#include "settingsdialog.h"
 #include "theme.h"
+#include "transcriptstore.h"
+#include "whisperengine.h"
 
 #include <QApplication>
+#include <QAudioOutput>
 #include <QClipboard>
+#include <QCloseEvent>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFrame>
@@ -13,14 +24,15 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMediaPlayer>
 #include <QMimeData>
 #include <QScrollArea>
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolButton>
+#include <QUuid>
 #include <QVBoxLayout>
-
-#include <cmath>
+#include <QtConcurrent>
 
 namespace {
 constexpr int kWindowW = 560;
@@ -29,11 +41,21 @@ constexpr int kWindowH = 760;
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
+    , m_engine(std::make_unique<WhisperEngine>())
 {
     setWindowTitle(tr("WhisperFlow"));
     resize(kWindowW, kWindowH);
     setAcceptDrops(true);
     setStyleSheet(Theme::styleSheet());
+
+    m_models = new ModelManager(this);
+    m_recorder = new AudioRecorder(this);
+    connect(m_recorder, &AudioRecorder::levelChanged, this,
+            [this](qreal level) { m_record->setLevel(level); });
+
+    m_player = new QMediaPlayer(this);
+    m_audioOut = new QAudioOutput(this);
+    m_player->setAudioOutput(m_audioOut);
 
     auto *root = new QWidget(this);
     root->setObjectName(QStringLiteral("root"));
@@ -52,24 +74,73 @@ MainWindow::MainWindow(QWidget *parent)
     statusBar()->addWidget(m_status);
     statusBar()->setStyleSheet(QStringLiteral("QStatusBar{background:#141416;border-top:1px solid #26262A;}"));
 
-    // Fake mic-level animation so the record button has something to react
-    // to. Replace with real levels from your audio input once wired up.
-    m_levelTimer = new QTimer(this);
-    connect(m_levelTimer, &QTimer::timeout, this, [this] {
-        m_levelTick++;
-        const qreal level = 0.35 + 0.35 * std::abs(std::sin(m_levelTick * 0.35));
-        m_record->setLevel(level);
-    });
-
     m_statusTimer = new QTimer(this);
     m_statusTimer->setSingleShot(true);
     connect(m_statusTimer, &QTimer::timeout, this, [this] { m_status->clear(); });
 
-    loadSampleData();
+    connect(&m_transcribeWatcher, &QFutureWatcher<QString>::finished, this, [this] {
+        m_transcribing = false;
+        const QString text = m_transcribeWatcher.result();
+        if (text.isEmpty()) {
+            flashStatus(tr("Transcription failed: %1").arg(m_engine->lastError()));
+            return;
+        }
+
+        const auto props = m_transcribeWatcher.property("job").toMap();
+        const QString clipId = props.value(QStringLiteral("clipId")).toString();
+        const int durationSec = props.value(QStringLiteral("durationSec")).toInt();
+        const bool isRetry = props.value(QStringLiteral("isRetry")).toBool();
+
+        if (isRetry) {
+            // Update the existing card in place: delete + re-add keeps it simple.
+            for (auto *card : std::as_const(m_cards)) {
+                if (card->data().id == clipId) {
+                    Transcript updated = card->data();
+                    updated.text = text;
+                    m_cards.removeOne(card);
+                    card->deleteLater();
+                    addCard(updated, true);
+                    break;
+                }
+            }
+        } else {
+            addCard({clipId, text, QDateTime::currentDateTime(), durationSec}, true);
+        }
+        persist();
+        flashStatus(tr("Done"));
+    });
+
+    // Global hotkey — works even when another app has focus.
+    m_hotkey = new GlobalHotkey(this);
+    connect(m_hotkey, &GlobalHotkey::activated, this, [this] {
+        show();
+        raise();
+        activateWindow();
+        toggleRecording();
+    });
+    if (!m_hotkey->registerHotkey())
+        flashStatus(tr("Global hotkey %1 unavailable (in use by another app)")
+                        .arg(m_hotkey->comboLabel()));
+
+    // Restore previous sessions' transcripts.
+    const QList<Transcript> saved = TranscriptStore::load();
+    for (const Transcript &t : saved)
+        addCard(t, false);
+
     refreshEmptyState();
 }
 
 MainWindow::~MainWindow() = default;
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (m_transcribing) {
+        // Let the worker finish writing before the engine is torn down.
+        m_transcribeWatcher.waitForFinished();
+    }
+    persist();
+    QMainWindow::closeEvent(event);
+}
 
 QWidget *MainWindow::buildHeader()
 {
@@ -144,24 +215,22 @@ QWidget *MainWindow::buildFooter()
 
     auto *hint = new QLabel(wrap);
     hint->setObjectName(QStringLiteral("hint"));
-    hint->setText(tr("Drop audio file here to transcribe"));
+    hint->setText(tr("Drop audio file here to transcribe  ·  %1 to record")
+                      .arg(m_hotkey ? m_hotkey->comboLabel() : QStringLiteral("…")));
     bottomRow->addWidget(hint);
     bottomRow->addStretch(1);
-
-    auto *mic = new QToolButton(wrap);
-    mic->setObjectName(QStringLiteral("footerBtn"));
-    mic->setIcon(Icons::icon(Icons::Mic, Theme::TextMuted, 16));
-    mic->setToolTip(tr("Input device"));
-    bottomRow->addWidget(mic);
 
     auto *trash = new QToolButton(wrap);
     trash->setObjectName(QStringLiteral("footerBtn"));
     trash->setIcon(Icons::icon(Icons::Trash, Theme::TextMuted, 16));
     trash->setToolTip(tr("Clear all"));
     connect(trash, &QToolButton::clicked, this, [this] {
-        for (auto *card : std::as_const(m_cards))
+        for (auto *card : std::as_const(m_cards)) {
+            AudioClipStore::remove(card->data().id);
             card->deleteLater();
+        }
         m_cards.clear();
+        persist();
         refreshEmptyState();
         flashStatus(tr("Cleared"));
     });
@@ -171,38 +240,94 @@ QWidget *MainWindow::buildFooter()
     settings->setObjectName(QStringLiteral("footerBtn"));
     settings->setIcon(Icons::icon(Icons::Settings, Theme::TextMuted, 16));
     settings->setToolTip(tr("Settings"));
+    connect(settings, &QToolButton::clicked, this, &MainWindow::openSettings);
     bottomRow->addWidget(settings);
 
     outer->addLayout(bottomRow);
     return wrap;
 }
 
+void MainWindow::openSettings()
+{
+    SettingsDialog dialog(m_models, this);
+    dialog.exec();
+}
+
+bool MainWindow::ensureModelReady()
+{
+    const QString id = m_models->activeModelId();
+    if (m_models->isDownloaded(id))
+        return true;
+
+    flashStatus(tr("Model \"%1\" is not downloaded yet — opening Settings").arg(id));
+    openSettings();
+    return m_models->isDownloaded(m_models->activeModelId());
+}
+
 void MainWindow::toggleRecording()
 {
-    const bool nowRecording = !m_record->isRecording();
-    m_record->setRecording(nowRecording);
+    if (m_transcribing) {
+        flashStatus(tr("Still transcribing the previous recording…"));
+        return;
+    }
 
-    if (nowRecording) {
-        m_levelTick = 0;
-        m_levelTimer->start(90);
+    if (!m_recorder->isRecording()) {
+        if (!ensureModelReady())
+            return;
+        if (!m_recorder->start()) {
+            flashStatus(m_recorder->lastError());
+            return;
+        }
+        m_recordClock.start();
+        m_record->setRecording(true);
         flashStatus(tr("Recording…"));
     } else {
-        m_levelTimer->stop();
-        flashStatus(tr("Transcribing…"));
+        std::vector<float> samples = m_recorder->stop();
+        m_record->setRecording(false);
 
-        // Placeholder: real pipeline should call whisper.cpp here and then
-        // call addTranscript() with the actual result.
-        QTimer::singleShot(900, this, [this] {
-            addTranscript({QString::number(m_nextId++),
-                           tr("New recording — replace this with the real "
-                              "transcription once whisper.cpp is wired in."),
-                           QDateTime::currentDateTime(), 0});
-            flashStatus(tr("Done"));
-        });
+        const int durationSec = int(m_recordClock.elapsed() / 1000);
+        if (samples.size() < 16000 / 2) { // < 0.5s of audio — accidental tap
+            flashStatus(tr("Recording too short"));
+            return;
+        }
+        runTranscription(std::move(samples), durationSec, QString());
     }
 }
 
-void MainWindow::addTranscript(const Transcript &t, bool atTop)
+void MainWindow::runTranscription(std::vector<float> samples, int durationSec, const QString &clipId)
+{
+    const QString id = clipId.isEmpty()
+        ? QUuid::createUuid().toString(QUuid::WithoutBraces).left(8)
+        : clipId;
+
+    if (clipId.isEmpty())
+        AudioClipStore::save(id, samples);
+
+    const QString modelPath = m_models->localPath(m_models->activeModelId());
+
+    QVariantMap job;
+    job[QStringLiteral("clipId")] = id;
+    job[QStringLiteral("durationSec")] = durationSec;
+    job[QStringLiteral("isRetry")] = !clipId.isEmpty();
+    m_transcribeWatcher.setProperty("job", job);
+
+    m_transcribing = true;
+    flashStatus(tr("Transcribing…"));
+
+    // WhisperEngine is only ever touched from inside this task while
+    // m_transcribing guards against a second one starting.
+    WhisperEngine *engine = m_engine.get();
+    m_transcribeWatcher.setFuture(QtConcurrent::run(
+        [engine, modelPath, samples = std::move(samples)]() -> QString {
+            if (engine->loadedPath() != modelPath) {
+                if (!engine->loadModel(modelPath))
+                    return QString();
+            }
+            return engine->transcribe(samples, QStringLiteral("en"));
+        }));
+}
+
+void MainWindow::addCard(const Transcript &t, bool atTop)
 {
     auto *card = new TranscriptCard(t, this);
     connect(card, &TranscriptCard::deleteRequested, this, &MainWindow::removeTranscript);
@@ -215,18 +340,50 @@ void MainWindow::addTranscript(const Transcript &t, bool atTop)
             }
         }
     });
-    connect(card, &TranscriptCard::retryRequested, this, [this](const QString &id) {
-        flashStatus(tr("Re-transcribing %1…").arg(id));
-    });
-    connect(card, &TranscriptCard::playRequested, this, [this](const QString &id) {
-        flashStatus(tr("Playing %1…").arg(id));
-    });
+    connect(card, &TranscriptCard::retryRequested, this, &MainWindow::retranscribe);
+    connect(card, &TranscriptCard::playRequested, this, &MainWindow::playClip);
 
     const int insertPos = atTop ? 1 : m_listLayout->count() - 1; // slot 0 is the empty state
     m_listLayout->insertWidget(insertPos, card);
     atTop ? m_cards.prepend(card) : m_cards.append(card);
 
     refreshEmptyState();
+}
+
+void MainWindow::playClip(const QString &id)
+{
+    if (!AudioClipStore::exists(id)) {
+        flashStatus(tr("No audio kept for this transcript"));
+        return;
+    }
+    m_player->stop();
+    m_player->setSource(QUrl::fromLocalFile(AudioClipStore::path(id)));
+    m_player->play();
+}
+
+void MainWindow::retranscribe(const QString &id)
+{
+    if (m_transcribing) {
+        flashStatus(tr("Still transcribing the previous recording…"));
+        return;
+    }
+    if (!ensureModelReady())
+        return;
+
+    std::vector<float> samples = AudioClipStore::load(id);
+    if (samples.empty()) {
+        flashStatus(tr("No audio kept for this transcript"));
+        return;
+    }
+
+    int durationSec = 0;
+    for (auto *card : std::as_const(m_cards)) {
+        if (card->data().id == id) {
+            durationSec = card->data().durationSec;
+            break;
+        }
+    }
+    runTranscription(std::move(samples), durationSec, id);
 }
 
 void MainWindow::removeTranscript(const QString &id)
@@ -238,19 +395,26 @@ void MainWindow::removeTranscript(const QString &id)
             break;
         }
     }
+    AudioClipStore::remove(id);
+    persist();
     refreshEmptyState();
     flashStatus(tr("Deleted"));
 }
 
+void MainWindow::persist()
+{
+    QList<Transcript> list;
+    list.reserve(m_cards.size());
+    for (auto *card : std::as_const(m_cards))
+        list.append(card->data());
+    TranscriptStore::save(list);
+}
+
 void MainWindow::applyFilter(const QString &needle)
 {
-    bool anyVisible = false;
-    for (auto *card : std::as_const(m_cards)) {
-        const bool match = card->matches(needle);
-        card->setVisible(match);
-        anyVisible |= match;
-    }
-    m_emptyState->setVisible(!anyVisible);
+    for (auto *card : std::as_const(m_cards))
+        card->setVisible(card->matches(needle));
+    refreshEmptyState();
 }
 
 void MainWindow::refreshEmptyState()
@@ -261,30 +425,7 @@ void MainWindow::refreshEmptyState()
 void MainWindow::flashStatus(const QString &message)
 {
     m_status->setText(message);
-    m_statusTimer->start(2500);
-}
-
-void MainWindow::loadSampleData()
-{
-    addTranscript({QStringLiteral("s3"),
-                   tr("I think I'll give you a ramble on what's going on and how I may want "
-                      "the thesis to go around. Then we can discuss it together. But the main "
-                      "thesis presentations, I mean, not the presentation, the actual written "
-                      "thesis needs a clear structure before I record anything else."),
-                   QDateTime(QDate(2026, 8, 9), QTime(15, 10)), 187},
-                  false);
-    addTranscript({QStringLiteral("s2"),
-                   tr("I don't really like this. This is already saying the representation "
-                      "needs to be aligned. That's the main thesis statement. That's not what "
-                      "we want. I think that should be more like a finding analysis instead."),
-                   QDateTime(QDate(2026, 8, 9), QTime(15, 3)), 94},
-                  false);
-    addTranscript({QStringLiteral("s1"),
-                   tr("Quick note to self: check the CMake install rules before the Windows "
-                      "build, and remember to bundle the whisper model file with windeployqt."),
-                   QDateTime(QDate(2026, 8, 9), QTime(14, 38)), 41},
-                  false);
-    m_nextId = 4;
+    m_statusTimer->start(3000);
 }
 
 void MainWindow::keyPressEvent(QKeyEvent *event)
@@ -305,16 +446,26 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 void MainWindow::dropEvent(QDropEvent *event)
 {
     const auto urls = event->mimeData()->urls();
-    if (urls.isEmpty())
+    if (urls.isEmpty() || !urls.first().isLocalFile())
+        return;
+    if (m_transcribing) {
+        flashStatus(tr("Still transcribing the previous recording…"));
+        return;
+    }
+    if (!ensureModelReady())
         return;
 
-    flashStatus(tr("Transcribing dropped file…"));
-    const QString fileName = urls.first().fileName();
-    QTimer::singleShot(900, this, [this, fileName] {
-        addTranscript({QString::number(m_nextId++),
-                       tr("Transcription of %1 — replace with real whisper.cpp output.")
-                           .arg(fileName),
-                       QDateTime::currentDateTime(), 0});
-        flashStatus(tr("Done"));
-    });
+    flashStatus(tr("Decoding %1…").arg(urls.first().fileName()));
+
+    auto *decoder = new AudioFileDecoder(urls.first().toLocalFile(), this);
+    connect(decoder, &AudioFileDecoder::finished, this,
+            [this](std::vector<float> samples, const QString &error) {
+                if (!error.isEmpty() || samples.empty()) {
+                    flashStatus(tr("Could not decode file: %1").arg(error));
+                    return;
+                }
+                const int durationSec = int(samples.size() / 16000);
+                runTranscription(std::move(samples), durationSec, QString());
+            });
+    decoder->start();
 }
