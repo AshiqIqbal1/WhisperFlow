@@ -27,6 +27,7 @@
 #include <QMediaPlayer>
 #include <QMimeData>
 #include <QScrollArea>
+#include <QSettings>
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolButton>
@@ -110,7 +111,8 @@ MainWindow::MainWindow(QWidget *parent)
         flashStatus(tr("Done"));
     });
 
-    // Global hotkey — works even when another app has focus.
+    // Global hotkey — works even when another app has focus. Combo is
+    // user-configurable in Settings; saved as a portable key string.
     m_hotkey = new GlobalHotkey(this);
     connect(m_hotkey, &GlobalHotkey::activated, this, [this] {
         show();
@@ -118,9 +120,13 @@ MainWindow::MainWindow(QWidget *parent)
         activateWindow();
         toggleRecording();
     });
-    if (!m_hotkey->registerHotkey())
-        flashStatus(tr("Global hotkey %1 unavailable (in use by another app)")
-                        .arg(m_hotkey->comboLabel()));
+    const QString savedCombo = QSettings().value(QStringLiteral("globalHotkey")).toString();
+    const QKeySequence combo = savedCombo.isEmpty()
+        ? GlobalHotkey::defaultSequence()
+        : QKeySequence(savedCombo, QKeySequence::PortableText);
+    if (!m_hotkey->setSequence(combo) && !m_hotkey->setSequence(GlobalHotkey::defaultSequence()))
+        flashStatus(tr("Global hotkey unavailable (in use by another app)"));
+    refreshHint();
 
     // Restore previous sessions' transcripts.
     const QList<Transcript> saved = TranscriptStore::load();
@@ -213,11 +219,9 @@ QWidget *MainWindow::buildFooter()
     auto *bottomRow = new QHBoxLayout;
     bottomRow->setSpacing(8);
 
-    auto *hint = new QLabel(wrap);
-    hint->setObjectName(QStringLiteral("hint"));
-    hint->setText(tr("Drop audio file here to transcribe  ·  %1 to record")
-                      .arg(m_hotkey ? m_hotkey->comboLabel() : QStringLiteral("…")));
-    bottomRow->addWidget(hint);
+    m_hint = new QLabel(wrap);
+    m_hint->setObjectName(QStringLiteral("hint"));
+    bottomRow->addWidget(m_hint);
     bottomRow->addStretch(1);
 
     auto *trash = new QToolButton(wrap);
@@ -249,8 +253,15 @@ QWidget *MainWindow::buildFooter()
 
 void MainWindow::openSettings()
 {
-    SettingsDialog dialog(m_models, this);
+    SettingsDialog dialog(m_models, m_hotkey, this);
     dialog.exec();
+    refreshHint(); // combo may have changed
+}
+
+void MainWindow::refreshHint()
+{
+    m_hint->setText(tr("Drop audio file here to transcribe  ·  %1 to record")
+                        .arg(m_hotkey->comboLabel()));
 }
 
 bool MainWindow::ensureModelReady()

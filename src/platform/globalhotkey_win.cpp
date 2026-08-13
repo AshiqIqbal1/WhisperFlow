@@ -10,13 +10,45 @@
 #include <windows.h>
 
 namespace {
+
 constexpr int kHotKeyId = 0x5746; // 'WF'
+
+// Qt logical key -> Win32 virtual-key code. Returns -1 when unsupported.
+int winVirtualKey(Qt::Key key)
+{
+    if (key >= Qt::Key_A && key <= Qt::Key_Z)
+        return 'A' + (key - Qt::Key_A);
+    if (key >= Qt::Key_0 && key <= Qt::Key_9)
+        return '0' + (key - Qt::Key_0);
+    if (key >= Qt::Key_F1 && key <= Qt::Key_F12)
+        return VK_F1 + (key - Qt::Key_F1);
+
+    switch (key) {
+    case Qt::Key_Space: return VK_SPACE;
+    case Qt::Key_Left:  return VK_LEFT;
+    case Qt::Key_Right: return VK_RIGHT;
+    case Qt::Key_Up:    return VK_UP;
+    case Qt::Key_Down:  return VK_DOWN;
+    default: return -1;
+    }
 }
+
+UINT winModifiers(Qt::KeyboardModifiers mods)
+{
+    UINT native = MOD_NOREPEAT; // no machine-gun toggling while held
+    if (mods & Qt::ControlModifier) native |= MOD_CONTROL;
+    if (mods & Qt::ShiftModifier)   native |= MOD_SHIFT;
+    if (mods & Qt::AltModifier)     native |= MOD_ALT;
+    if (mods & Qt::MetaModifier)    native |= MOD_WIN;
+    return native;
+}
+
+} // namespace
 
 struct GlobalHotkey::Impl : public QAbstractNativeEventFilter
 {
     GlobalHotkey *owner = nullptr;
-    bool registered = false;
+    bool filterInstalled = false;
 
     bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *) override
     {
@@ -42,35 +74,60 @@ GlobalHotkey::GlobalHotkey(QObject *parent)
 GlobalHotkey::~GlobalHotkey()
 {
     unregisterHotkey();
+    if (m_impl->filterInstalled && QCoreApplication::instance())
+        QCoreApplication::instance()->removeNativeEventFilter(m_impl);
     delete m_impl;
 }
 
-bool GlobalHotkey::registerHotkey()
+bool GlobalHotkey::setSequence(const QKeySequence &seq)
 {
-    if (m_impl->registered)
-        return true;
-
-    // Ctrl+Shift+R, systemwide. MOD_NOREPEAT stops auto-repeat from firing
-    // the toggle machine-gun style while the keys are held.
-    if (!RegisterHotKey(nullptr, kHotKeyId, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'R'))
+    if (seq.isEmpty())
         return false;
 
-    QCoreApplication::instance()->installNativeEventFilter(m_impl);
-    m_impl->registered = true;
+    const QKeySequence old = m_seq;
+    const bool wasRegistered = m_registered;
+
+    unregisterNative();
+    m_registered = false;
+
+    if (registerNative(seq)) {
+        m_seq = seq;
+        m_registered = true;
+        return true;
+    }
+
+    // Roll back so a rejected combo doesn't leave the user with nothing.
+    if (wasRegistered && registerNative(old)) {
+        m_seq = old;
+        m_registered = true;
+    }
+    return false;
+}
+
+bool GlobalHotkey::registerNative(const QKeySequence &seq)
+{
+    const QKeyCombination combo = seq[0];
+    const int vk = winVirtualKey(combo.key());
+    if (vk < 0)
+        return false;
+
+    if (!RegisterHotKey(nullptr, kHotKeyId, winModifiers(combo.keyboardModifiers()), UINT(vk)))
+        return false;
+
+    if (!m_impl->filterInstalled) {
+        QCoreApplication::instance()->installNativeEventFilter(m_impl);
+        m_impl->filterInstalled = true;
+    }
     return true;
+}
+
+void GlobalHotkey::unregisterNative()
+{
+    UnregisterHotKey(nullptr, kHotKeyId);
 }
 
 void GlobalHotkey::unregisterHotkey()
 {
-    if (!m_impl->registered)
-        return;
-
-    UnregisterHotKey(nullptr, kHotKeyId);
-    QCoreApplication::instance()->removeNativeEventFilter(m_impl);
-    m_impl->registered = false;
-}
-
-QString GlobalHotkey::comboLabel() const
-{
-    return QStringLiteral("Ctrl+Shift+R");
+    unregisterNative();
+    m_registered = false;
 }

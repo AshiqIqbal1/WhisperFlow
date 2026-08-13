@@ -54,6 +54,7 @@ private:
     void runTranscription(std::vector<float> samples, int durationSec, const QString &clipId);
 
     bool ensureModelReady(); // downloaded? if not, nudges user to Settings
+    void refreshHint();
     void addCard(const Transcript &t, bool atTop);
     void removeTranscript(const QString &id);
     void playClip(const QString &id);
@@ -68,6 +69,7 @@ private:
     QWidget      *m_emptyState = nullptr;
     RecordButton *m_record = nullptr;
     QLabel       *m_status = nullptr;
+    QLabel       *m_hint = nullptr;
     QTimer       *m_statusTimer = nullptr;
 
     // --- engine & io ---

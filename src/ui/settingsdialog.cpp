@@ -1,21 +1,25 @@
 #include "settingsdialog.h"
 
+#include "globalhotkey.h"
 #include "modelcatalog.h"
 #include "modelmanager.h"
 #include "theme.h"
 
 #include <QDialogButtonBox>
 #include <QGridLayout>
+#include <QKeySequenceEdit>
 #include <QLabel>
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QSettings>
 #include <QVBoxLayout>
 
-SettingsDialog::SettingsDialog(ModelManager *models, QWidget *parent)
+SettingsDialog::SettingsDialog(ModelManager *models, GlobalHotkey *hotkey, QWidget *parent)
     : QDialog(parent)
     , m_models(models)
+    , m_hotkey(hotkey)
 {
     setWindowTitle(tr("Settings"));
     setMinimumWidth(520);
@@ -102,11 +106,39 @@ QPushButton:disabled { color: #5E5E66; background: #222226; }
     }
     layout->addLayout(grid);
 
-    auto *hotkeyNote = new QLabel(this);
-    hotkeyNote->setObjectName(QStringLiteral("cardMeta"));
-    hotkeyNote->setText(tr("Global hotkey is fixed for now; remapping is a planned setting."));
-    hotkeyNote->setWordWrap(true);
-    layout->addWidget(hotkeyNote);
+    // --- global shortcut ---------------------------------------------------
+    auto *hotkeyHeading = new QLabel(tr("Global shortcut"), this);
+    hotkeyHeading->setStyleSheet(QStringLiteral("font-size: 16px; font-weight: 600;"));
+    layout->addWidget(hotkeyHeading);
+
+    auto *hotkeyRow = new QHBoxLayout;
+    hotkeyRow->setSpacing(10);
+
+    m_hotkeyEdit = new QKeySequenceEdit(this);
+    m_hotkeyEdit->setMaximumSequenceLength(1);
+    m_hotkeyEdit->setClearButtonEnabled(true);
+    m_hotkeyEdit->setKeySequence(m_hotkey->sequence());
+    m_hotkeyEdit->setStyleSheet(QStringLiteral(
+        "QLineEdit{background:#26262A;border:1px solid #3A3A42;border-radius:8px;padding:6px 10px;}"));
+    connect(m_hotkeyEdit, &QKeySequenceEdit::editingFinished,
+            this, &SettingsDialog::onHotkeyEdited);
+    hotkeyRow->addWidget(m_hotkeyEdit, 1);
+
+    auto *resetBtn = new QPushButton(tr("Reset"), this);
+    connect(resetBtn, &QPushButton::clicked, this, [this] {
+        m_hotkeyEdit->setKeySequence(GlobalHotkey::defaultSequence());
+        onHotkeyEdited();
+    });
+    hotkeyRow->addWidget(resetBtn);
+    layout->addLayout(hotkeyRow);
+
+    m_hotkeyStatus = new QLabel(this);
+    m_hotkeyStatus->setObjectName(QStringLiteral("cardMeta"));
+    m_hotkeyStatus->setWordWrap(true);
+    m_hotkeyStatus->setText(tr("Click the field, then press the keys. Needs at least one "
+                               "modifier (Ctrl/Cmd/Alt/Shift). Works while the app is in "
+                               "the background."));
+    layout->addWidget(m_hotkeyStatus);
 
     layout->addStretch(1);
 
@@ -147,6 +179,37 @@ void SettingsDialog::refreshRow(const QString &id)
         r.action->setText(tr("Delete"));
     else
         r.action->setText(tr("Download"));
+}
+
+void SettingsDialog::onHotkeyEdited()
+{
+    const QKeySequence seq = m_hotkeyEdit->keySequence();
+
+    // Empty (user hit the clear button) — keep the current one.
+    if (seq.isEmpty()) {
+        m_hotkeyEdit->setKeySequence(m_hotkey->sequence());
+        return;
+    }
+    if (seq == m_hotkey->sequence())
+        return;
+
+    // A global hotkey without modifiers would swallow plain typing systemwide.
+    if (seq[0].keyboardModifiers() == Qt::NoModifier) {
+        m_hotkeyStatus->setText(tr("⚠ Needs at least one modifier key (Ctrl/Cmd/Alt/Shift)."));
+        m_hotkeyEdit->setKeySequence(m_hotkey->sequence());
+        return;
+    }
+
+    if (m_hotkey->setSequence(seq)) {
+        QSettings().setValue(QStringLiteral("globalHotkey"),
+                             seq.toString(QKeySequence::PortableText));
+        m_hotkeyStatus->setText(tr("Shortcut set to %1.").arg(m_hotkey->comboLabel()));
+    } else {
+        m_hotkeyStatus->setText(tr("⚠ Couldn't register that combo (unsupported key or "
+                                   "already taken by another app). Kept %1.")
+                                    .arg(m_hotkey->comboLabel()));
+        m_hotkeyEdit->setKeySequence(m_hotkey->sequence());
+    }
 }
 
 void SettingsDialog::onDownloadClicked(const QString &id)
