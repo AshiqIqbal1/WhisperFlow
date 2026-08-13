@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(WhisperFlow LANGUAGES CXX)
+project(Whisperlet LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,7 +43,7 @@ if(NOT MSVC)
     endforeach()
 endif()
 
-qt_add_executable(WhisperFlow
+qt_add_executable(Whisperlet
     WIN32 MACOSX_BUNDLE
     src/main.cpp
     src/ui/mainwindow.h
@@ -76,7 +76,7 @@ qt_add_executable(WhisperFlow
 )
 
 # Headers include each other by bare name ("theme.h") regardless of layer.
-target_include_directories(WhisperFlow PRIVATE
+target_include_directories(Whisperlet PRIVATE
     src
     src/ui
     src/core
@@ -87,27 +87,27 @@ target_include_directories(WhisperFlow PRIVATE
 # plain C — no Objective-C needed — and is what most macOS menu-bar utilities
 # still use for a systemwide shortcut that needs no Accessibility permission.
 if(APPLE)
-    target_sources(WhisperFlow PRIVATE src/platform/globalhotkey_mac.cpp)
-    target_link_libraries(WhisperFlow PRIVATE "-framework Carbon")
+    target_sources(Whisperlet PRIVATE src/platform/globalhotkey_mac.cpp)
+    target_link_libraries(Whisperlet PRIVATE "-framework Carbon")
     # Custom Info.plist: NSMicrophoneUsageDescription is mandatory for mic
     # capture — without it macOS never even shows the permission prompt.
-    set_target_properties(WhisperFlow PROPERTIES
+    set_target_properties(Whisperlet PROPERTIES
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/Info.plist.in"
-        MACOSX_BUNDLE_GUI_IDENTIFIER "com.ashiqiqbal.whisperflow"
-        MACOSX_BUNDLE_BUNDLE_NAME "WhisperFlow"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.ashiqiqbal.whisperlet"
+        MACOSX_BUNDLE_BUNDLE_NAME "Whisperlet"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0"
         MACOSX_BUNDLE_BUNDLE_VERSION "1"
     )
 elseif(WIN32)
-    target_sources(WhisperFlow PRIVATE src/platform/globalhotkey_win.cpp)
+    target_sources(Whisperlet PRIVATE src/platform/globalhotkey_win.cpp)
 endif()
 
 qt_add_translations(
-    TARGETS WhisperFlow
-    TS_FILES i18n/WhisperFlow_en_AU.ts
+    TARGETS Whisperlet
+    TS_FILES i18n/Whisperlet_en_AU.ts
 )
 
-target_link_libraries(WhisperFlow
+target_link_libraries(Whisperlet
     PRIVATE
         Qt::Core
         Qt::Widgets
@@ -118,14 +118,14 @@ target_link_libraries(WhisperFlow
         whisper
 )
 
-install(TARGETS WhisperFlow
+install(TARGETS Whisperlet
     BUNDLE  DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
 qt_generate_deploy_app_script(
-    TARGET WhisperFlow
+    TARGET Whisperlet
     OUTPUT_SCRIPT deploy_script
     NO_UNSUPPORTED_PLATFORM_ERROR
 )

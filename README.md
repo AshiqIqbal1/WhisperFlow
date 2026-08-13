@@ -1,6 +1,6 @@
-# WhisperFlow
+# Whisperlet
 
-[![build](https://github.com/AshiqIqbal1/WhisperFlow/actions/workflows/build.yml/badge.svg)](https://github.com/AshiqIqbal1/WhisperFlow/actions/workflows/build.yml)
+[![build](https://github.com/AshiqIqbal1/Whisperlet/actions/workflows/build.yml/badge.svg)](https://github.com/AshiqIqbal1/Whisperlet/actions/workflows/build.yml)
 
 Small desktop app for local speech-to-text. Hit record (or press the global
 hotkey), talk, and it transcribes with [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
@@ -32,7 +32,7 @@ transcript so you can replay it or re-run it later with a bigger model.
 
 ## Download
 
-Prebuilt binaries are on the [releases page](https://github.com/AshiqIqbal1/WhisperFlow/releases):
+Prebuilt binaries are on the [releases page](https://github.com/AshiqIqbal1/Whisperlet/releases):
 a `.dmg` for macOS (Apple Silicon) and a `.zip` for Windows x64.
 
 The binaries aren't code-signed, so the OS will complain the first time:

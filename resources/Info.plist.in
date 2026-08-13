@@ -20,6 +20,6 @@
     <true/>
     <!-- Without this key macOS silently refuses microphone capture. -->
     <key>NSMicrophoneUsageDescription</key>
-    <string>WhisperFlow records audio from your microphone to transcribe it locally on this device.</string>
+    <string>Whisperlet records audio from your microphone to transcribe it locally on this device.</string>
 </dict>
 </plist>

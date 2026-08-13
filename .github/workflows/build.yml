@@ -33,13 +33,13 @@ jobs:
 
       - name: Package (dmg)
         run: |
-          macdeployqt build/WhisperFlow.app -dmg
-          mv build/WhisperFlow.dmg WhisperFlow-macos-arm64.dmg
+          macdeployqt build/Whisperlet.app -dmg
+          mv build/Whisperlet.dmg Whisperlet-macos-arm64.dmg
 
       - uses: actions/upload-artifact@v4
         with:
-          name: WhisperFlow-macos-arm64
-          path: WhisperFlow-macos-arm64.dmg
+          name: Whisperlet-macos-arm64
+          path: Whisperlet-macos-arm64.dmg
 
   windows:
     runs-on: windows-latest
@@ -67,14 +67,14 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item build/WhisperFlow.exe dist/
-          windeployqt --release --no-translations dist/WhisperFlow.exe
-          Compress-Archive -Path dist/* -DestinationPath WhisperFlow-windows-x64.zip
+          Copy-Item build/Whisperlet.exe dist/
+          windeployqt --release --no-translations dist/Whisperlet.exe
+          Compress-Archive -Path dist/* -DestinationPath Whisperlet-windows-x64.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: WhisperFlow-windows-x64
-          path: WhisperFlow-windows-x64.zip
+          name: Whisperlet-windows-x64
+          path: Whisperlet-windows-x64.zip
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -91,6 +91,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            WhisperFlow-macos-arm64.dmg
-            WhisperFlow-windows-x64.zip
+            Whisperlet-macos-arm64.dmg
+            Whisperlet-windows-x64.zip
           generate_release_notes: true

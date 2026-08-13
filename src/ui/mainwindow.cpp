@@ -44,7 +44,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_engine(std::make_unique<WhisperEngine>())
 {
-    setWindowTitle(tr("WhisperFlow"));
+    setWindowTitle(tr("Whisperlet"));
     resize(kWindowW, kWindowH);
     setAcceptDrops(true);
     setStyleSheet(Theme::styleSheet());
