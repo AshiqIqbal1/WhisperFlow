@@ -1,0 +1,14 @@
+# Normalize line endings so mac/Windows contributors don't fight CRLF diffs.
+* text=auto
+*.cpp text
+*.h text
+*.md text
+*.yml text
+*.txt text
+*.plist text
+*.ts text
+
+# Never touch binaries.
+*.png binary
+*.icns binary
+*.ico binary

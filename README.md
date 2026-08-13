@@ -47,11 +47,12 @@ Multimedia and Concurrent modules. First configure clones whisper.cpp via
 FetchContent, so network is required once.
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+cmake --preset release
+cmake --build --preset release -j
 ```
 
-Or just open CMakeLists.txt in Qt Creator.
+Or just open CMakeLists.txt in Qt Creator. If Qt isn't found, point CMake at
+it with `-DCMAKE_PREFIX_PATH=/path/to/Qt/6.x.x/<arch>`.
 
 On Windows run windeployqt on the built exe if you want to move it to
 another machine. whisper.cpp is compiled CPU-only so the same setup works on
