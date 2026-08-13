@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QIcon>
 #include <QLocale>
 #include <QSettings>
 #include <QStandardPaths>
@@ -46,6 +47,7 @@ int main(int argc, char *argv[])
     // Windows). Must happen before anything touches settings or the model dir.
     QCoreApplication::setOrganizationName(QStringLiteral("Whisperlet"));
     QCoreApplication::setApplicationName(QStringLiteral("Whisperlet"));
+    a.setWindowIcon(QIcon(QStringLiteral(":/assets/icon-64.png")));
 
     migrateFromWhisperFlow();
 

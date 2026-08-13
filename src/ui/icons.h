@@ -19,7 +19,9 @@ enum Name {
     ChevronDown,
     ChevronUp,
     FileDown,
-    Waveform
+    Waveform,
+    Minimize,
+    Close
 };
 
 QIcon icon(Name name, const QColor &color, int px = 18);

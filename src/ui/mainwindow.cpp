@@ -8,8 +8,11 @@
 #include "modelcatalog.h"
 #include "modelmanager.h"
 #include "recordbutton.h"
+#include "recordingpill.h"
 #include "settingsdialog.h"
+#include "textinjector.h"
 #include "theme.h"
+#include "titlebar.h"
 #include "transcriptstore.h"
 #include "whisperengine.h"
 
@@ -49,6 +52,11 @@ MainWindow::MainWindow(QWidget *parent)
     setAcceptDrops(true);
     setStyleSheet(Theme::styleSheet());
 
+    // Custom chrome: hide the OS title bar, TitleBar below provides logo,
+    // drag area and window buttons. The status bar's size grip keeps the
+    // window resizable.
+    setWindowFlag(Qt::FramelessWindowHint, true);
+
     m_models = new ModelManager(this);
     m_recorder = new AudioRecorder(this);
     connect(m_recorder, &AudioRecorder::levelChanged, this,
@@ -60,15 +68,24 @@ MainWindow::MainWindow(QWidget *parent)
 
     auto *root = new QWidget(this);
     root->setObjectName(QStringLiteral("root"));
-    auto *layout = new QVBoxLayout(root);
-    layout->setContentsMargins(20, 18, 20, 16);
+    auto *outer = new QVBoxLayout(root);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
+    outer->addWidget(new TitleBar(root));
+
+    auto *content = new QWidget(root);
+    auto *layout = new QVBoxLayout(content);
+    layout->setContentsMargins(20, 6, 20, 16);
     layout->setSpacing(14);
 
     layout->addWidget(buildHeader());
     layout->addWidget(buildList(), /*stretch=*/1);
     layout->addWidget(buildFooter());
 
+    outer->addWidget(content, /*stretch=*/1);
     setCentralWidget(root);
+
+    m_pill = new RecordingPill; // top-level tool window, parentless on purpose
 
     m_status = new QLabel(this);
     m_status->setObjectName(QStringLiteral("statusLabel"));
@@ -81,6 +98,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(&m_transcribeWatcher, &QFutureWatcher<QString>::finished, this, [this] {
         m_transcribing = false;
+        m_pill->hide();
         const QString text = m_transcribeWatcher.result();
         if (text.isEmpty()) {
             flashStatus(tr("Transcription failed: %1").arg(m_engine->lastError()));
@@ -91,6 +109,19 @@ MainWindow::MainWindow(QWidget *parent)
         const QString clipId = props.value(QStringLiteral("clipId")).toString();
         const int durationSec = props.value(QStringLiteral("durationSec")).toInt();
         const bool isRetry = props.value(QStringLiteral("isRetry")).toBool();
+        const bool dictated = props.value(QStringLiteral("dictated")).toBool();
+
+        // Dictation: drop the text into whatever app the user is in.
+        if (dictated && QSettings().value(QStringLiteral("pasteAfterDictation"), true).toBool()) {
+            if (TextInjector::canInject()) {
+                TextInjector::pasteIntoActiveApp(text);
+            } else {
+                TextInjector::requestPermission(); // mac: shows Accessibility prompt
+                flashStatus(tr("Grant Accessibility permission to let Whisperlet "
+                               "type into other apps — text was copied instead"));
+                QGuiApplication::clipboard()->setText(text);
+            }
+        }
 
         if (isRetry) {
             // Update the existing card in place: delete + re-add keeps it simple.
@@ -113,11 +144,14 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Global hotkey — works even when another app has focus. Combo is
     // user-configurable in Settings; saved as a portable key string.
+    //
+    // Pressed while another app is focused = dictation: record WITHOUT
+    // raising our window (the target text field must keep focus), show the
+    // floating pill, and paste the result into that app when done.
     m_hotkey = new GlobalHotkey(this);
     connect(m_hotkey, &GlobalHotkey::activated, this, [this] {
-        show();
-        raise();
-        activateWindow();
+        if (!m_recorder->isRecording())
+            m_dictating = !isActiveWindow();
         toggleRecording();
     });
     const QString savedCombo = QSettings().value(QStringLiteral("globalHotkey")).toString();
@@ -136,7 +170,10 @@ MainWindow::MainWindow(QWidget *parent)
     refreshEmptyState();
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow()
+{
+    delete m_pill; // parentless top-level window, not in our child tree
+}
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
@@ -253,6 +290,12 @@ QWidget *MainWindow::buildFooter()
 
 void MainWindow::openSettings()
 {
+    // Mute hotkey activations while the dialog is open. Without this,
+    // pressing the current combo inside the shortcut editor raised the
+    // window, yanked focus out of the field mid-edit, and the combo
+    // appeared to "reset itself" back to the old value.
+    QSignalBlocker muteHotkey(m_hotkey);
+
     SettingsDialog dialog(m_models, m_hotkey, this);
     dialog.exec();
     refreshHint(); // combo may have changed
@@ -283,29 +326,41 @@ void MainWindow::toggleRecording()
     }
 
     if (!m_recorder->isRecording()) {
-        if (!ensureModelReady())
+        if (!ensureModelReady()) {
+            m_dictating = false;
             return;
+        }
         if (!m_recorder->start()) {
             flashStatus(m_recorder->lastError());
+            m_dictating = false;
             return;
         }
         m_recordClock.start();
         m_record->setRecording(true);
+        if (m_dictating)
+            m_pill->showRecording();
         flashStatus(tr("Recording…"));
     } else {
         std::vector<float> samples = m_recorder->stop();
         m_record->setRecording(false);
 
+        const bool dictated = m_dictating;
+        m_dictating = false;
+
         const int durationSec = int(m_recordClock.elapsed() / 1000);
         if (samples.size() < 16000 / 2) { // < 0.5s of audio — accidental tap
+            m_pill->hide();
             flashStatus(tr("Recording too short"));
             return;
         }
-        runTranscription(std::move(samples), durationSec, QString());
+        if (dictated)
+            m_pill->showTranscribing();
+        runTranscription(std::move(samples), durationSec, QString(), dictated);
     }
 }
 
-void MainWindow::runTranscription(std::vector<float> samples, int durationSec, const QString &clipId)
+void MainWindow::runTranscription(std::vector<float> samples, int durationSec,
+                                  const QString &clipId, bool dictated)
 {
     const QString id = clipId.isEmpty()
         ? QUuid::createUuid().toString(QUuid::WithoutBraces).left(8)
@@ -320,6 +375,7 @@ void MainWindow::runTranscription(std::vector<float> samples, int durationSec, c
     job[QStringLiteral("clipId")] = id;
     job[QStringLiteral("durationSec")] = durationSec;
     job[QStringLiteral("isRetry")] = !clipId.isEmpty();
+    job[QStringLiteral("dictated")] = dictated;
     m_transcribeWatcher.setProperty("job", job);
 
     m_transcribing = true;
@@ -394,7 +450,7 @@ void MainWindow::retranscribe(const QString &id)
             break;
         }
     }
-    runTranscription(std::move(samples), durationSec, id);
+    runTranscription(std::move(samples), durationSec, id, /*dictated=*/false);
 }
 
 void MainWindow::removeTranscript(const QString &id)
@@ -476,7 +532,7 @@ void MainWindow::dropEvent(QDropEvent *event)
                     return;
                 }
                 const int durationSec = int(samples.size() / 16000);
-                runTranscription(std::move(samples), durationSec, QString());
+                runTranscription(std::move(samples), durationSec, QString(), /*dictated=*/false);
             });
     decoder->start();
 }

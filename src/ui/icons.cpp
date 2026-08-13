@@ -40,6 +40,10 @@ QString body(Icons::Name name)
     case Icons::Waveform:
         return QStringLiteral(R"(<path d="M3 12h2"/><path d="M8 7v10"/><path d="M12 4v16"/>)"
                               R"(<path d="M16 8v8"/><path d="M20 11v2"/>)");
+    case Icons::Minimize:
+        return QStringLiteral(R"(<path d="M5 12h14"/>)");
+    case Icons::Close:
+        return QStringLiteral(R"(<path d="m6 6 12 12"/><path d="m18 6-12 12"/>)");
     }
     return QString();
 }

@@ -20,8 +20,18 @@ include(FetchContent)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(GGML_METAL OFF CACHE BOOL "" FORCE)
 set(GGML_BLAS OFF CACHE BOOL "" FORCE)
+
+# Metal on Apple Silicon: transcription runs on the GPU — several times
+# faster AND cheaper on battery than pegging the CPU cores (race-to-sleep).
+# Embedding the shader library keeps the .app self-contained. Windows stays
+# CPU-only; the tree still builds there unchanged.
+if(APPLE)
+    set(GGML_METAL ON CACHE BOOL "" FORCE)
+    set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "" FORCE)
+else()
+    set(GGML_METAL OFF CACHE BOOL "" FORCE)
+endif()
 
 FetchContent_Declare(
     whisper_cpp
@@ -72,7 +82,18 @@ qt_add_executable(Whisperlet
     src/core/audiofiledecoder.cpp
     src/core/transcriptstore.h
     src/core/transcriptstore.cpp
+    src/ui/titlebar.h
+    src/ui/titlebar.cpp
+    src/ui/recordingpill.h
+    src/ui/recordingpill.cpp
     src/platform/globalhotkey.h
+    src/platform/textinjector.h
+)
+
+# In-app logo (title bar); bundle/EXE icons are handled per-platform below.
+qt_add_resources(Whisperlet "appassets"
+    PREFIX "/"
+    FILES assets/icon-64.png
 )
 
 # Headers include each other by bare name ("theme.h") regardless of layer.
@@ -87,19 +108,35 @@ target_include_directories(Whisperlet PRIVATE
 # plain C — no Objective-C needed — and is what most macOS menu-bar utilities
 # still use for a systemwide shortcut that needs no Accessibility permission.
 if(APPLE)
-    target_sources(Whisperlet PRIVATE src/platform/globalhotkey_mac.cpp)
-    target_link_libraries(Whisperlet PRIVATE "-framework Carbon")
+    target_sources(Whisperlet PRIVATE
+        src/platform/globalhotkey_mac.cpp
+        src/platform/textinjector_mac.cpp
+        assets/whisperlet.icns
+    )
+    # Carbon: global hotkey. ApplicationServices: AX* trust check + CGEvent
+    # keystroke synthesis for dictation paste.
+    target_link_libraries(Whisperlet PRIVATE
+        "-framework Carbon"
+        "-framework ApplicationServices"
+    )
+    set_source_files_properties(assets/whisperlet.icns PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources")
     # Custom Info.plist: NSMicrophoneUsageDescription is mandatory for mic
     # capture — without it macOS never even shows the permission prompt.
     set_target_properties(Whisperlet PROPERTIES
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/Info.plist.in"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.ashiqiqbal.whisperlet"
         MACOSX_BUNDLE_BUNDLE_NAME "Whisperlet"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.3.0"
         MACOSX_BUNDLE_BUNDLE_VERSION "1"
+        MACOSX_BUNDLE_ICON_FILE "whisperlet.icns"
     )
 elseif(WIN32)
-    target_sources(Whisperlet PRIVATE src/platform/globalhotkey_win.cpp)
+    target_sources(Whisperlet PRIVATE
+        src/platform/globalhotkey_win.cpp
+        src/platform/textinjector_win.cpp
+        resources/whisperlet.rc
+    )
 endif()
 
 qt_add_translations(

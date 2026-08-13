@@ -22,6 +22,7 @@ class QTimer;
 class QVBoxLayout;
 class QWidget;
 class RecordButton;
+class RecordingPill;
 class WhisperEngine;
 
 class MainWindow : public QMainWindow
@@ -51,7 +52,10 @@ private:
     // Runs whisper on a worker thread; samples must be 16kHz mono float32.
     // clipId is empty for fresh recordings (a new id is minted and the clip
     // saved), non-empty when re-transcribing an existing card's audio.
-    void runTranscription(std::vector<float> samples, int durationSec, const QString &clipId);
+    // dictated = hotkey recording made while another app had focus; the
+    // result is pasted into that app instead of only landing in the list.
+    void runTranscription(std::vector<float> samples, int durationSec,
+                          const QString &clipId, bool dictated);
 
     bool ensureModelReady(); // downloaded? if not, nudges user to Settings
     void refreshHint();
@@ -81,7 +85,9 @@ private:
 
     std::unique_ptr<WhisperEngine> m_engine;
     QFutureWatcher<QString> m_transcribeWatcher;
+    RecordingPill *m_pill = nullptr;
     bool m_transcribing = false;
+    bool m_dictating = false; // current recording started via hotkey, away from the app
 
     QElapsedTimer m_recordClock;
     QList<TranscriptCard *> m_cards;

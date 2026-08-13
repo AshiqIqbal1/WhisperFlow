@@ -5,6 +5,7 @@
 #include "modelmanager.h"
 #include "theme.h"
 
+#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QGridLayout>
 #include <QKeySequenceEdit>
@@ -139,6 +140,17 @@ QPushButton:disabled { color: #5E5E66; background: #222226; }
                                "modifier (Ctrl/Cmd/Alt/Shift). Works while the app is in "
                                "the background."));
     layout->addWidget(m_hotkeyStatus);
+
+    // --- dictation ----------------------------------------------------------
+    auto *pasteBox = new QCheckBox(tr("Paste dictated text into the active app"), this);
+    pasteBox->setChecked(QSettings().value(QStringLiteral("pasteAfterDictation"), true).toBool());
+    pasteBox->setToolTip(tr("When recording is started with the global shortcut while "
+                            "another app is focused, the transcript is pasted there. "
+                            "On macOS this needs the Accessibility permission."));
+    connect(pasteBox, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(QStringLiteral("pasteAfterDictation"), on);
+    });
+    layout->addWidget(pasteBox);
 
     layout->addStretch(1);
 
