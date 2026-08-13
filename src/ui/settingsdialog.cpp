@@ -5,6 +5,7 @@
 #include "modelmanager.h"
 #include "theme.h"
 
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -69,11 +70,18 @@ QPushButton:disabled { color: #5E5E66; background: #222226; }
     grid->setVerticalSpacing(10);
     grid->setColumnStretch(1, 1);
 
+    // QRadioButtons auto-group per parent widget — without explicit groups
+    // the model radios and the shortcut-mode radios would all be mutually
+    // exclusive with EACH OTHER (picking a shortcut mode deselected the
+    // active model).
+    auto *modelGroup = new QButtonGroup(this);
+
     int row = 0;
     for (const ModelInfo &info : ModelCatalog::all()) {
         Row r;
 
         r.active = new QRadioButton(info.label, this);
+        modelGroup->addButton(r.active);
         r.active->setToolTip(info.description);
         connect(r.active, &QRadioButton::toggled, this, [this, id = info.id](bool on) {
             if (on)
@@ -117,6 +125,9 @@ QPushButton:disabled { color: #5E5E66; background: #222226; }
     // modifier tapped on its own (OpenSuperWhisper style).
     m_comboRadio = new QRadioButton(tr("Key combination"), this);
     m_tapRadio = new QRadioButton(tr("Single modifier key"), this);
+    auto *modeGroup = new QButtonGroup(this);
+    modeGroup->addButton(m_comboRadio);
+    modeGroup->addButton(m_tapRadio);
     (m_hotkey->isModifierTapMode() ? m_tapRadio : m_comboRadio)->setChecked(true);
 
     auto *comboRow = new QHBoxLayout;
