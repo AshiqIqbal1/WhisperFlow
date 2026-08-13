@@ -1,9 +1,12 @@
-// macOS backend for GlobalHotkey — Carbon's HIToolbox hotkey API.
+// macOS backend for GlobalHotkey.
 //
-// Why Carbon on a modern Mac: it's deprecated-but-functional, and it's the
-// only systemwide-hotkey mechanism that doesn't require the user to grant
-// Accessibility permission (the alternative, a CGEventTap, does). Utilities
-// like Rectangle and Alfred lean on the exact same API for this reason.
+// Combo mode: Carbon RegisterEventHotKey — deprecated-but-standard, and the
+// only systemwide-hotkey API that needs no permission (Rectangle, Alfred and
+// friends use it).
+//
+// Modifier-tap mode: bare modifiers can't be hotkeys, so this uses a
+// listen-only CGEventTap on flagsChanged/keyDown. That DOES require the
+// Accessibility permission — the same one dictation already asks for.
 #include "globalhotkey.h"
 
 #include <Carbon/Carbon.h>
@@ -14,8 +17,6 @@ constexpr UInt32 kHotKeySignature = 'WspF'; // arbitrary 4-char app namespace
 constexpr UInt32 kHotKeyId = 1;
 
 // Qt logical key -> Carbon *physical* keycode (ANSI layout positions).
-// Carbon keycodes are scattered, so this has to be a table. Returns -1 for
-// keys we don't support as a hotkey trigger.
 int carbonKeyCode(Qt::Key key)
 {
     switch (key) {
@@ -87,34 +88,83 @@ UInt32 carbonModifiers(Qt::KeyboardModifiers mods)
     return native;
 }
 
+CGKeyCode rightModKeyCode(GlobalHotkey::ModKey key)
+{
+    switch (key) {
+    case GlobalHotkey::ModKey::RightCmd:   return 0x36; // kVK_RightCommand
+    case GlobalHotkey::ModKey::RightShift: return 0x3C;
+    case GlobalHotkey::ModKey::RightAlt:   return 0x3D; // right option
+    case GlobalHotkey::ModKey::RightCtrl:  return 0x3E;
+    }
+    return 0;
+}
+
 } // namespace
 
 struct GlobalHotkey::Impl
 {
     GlobalHotkey *owner = nullptr;
+
+    // combo mode
     EventHotKeyRef hotKeyRef = nullptr;
     EventHandlerRef handlerRef = nullptr;
 
-    // Carbon fires this on the main thread, inside the app's normal event
-    // loop, so emitting the Qt signal directly is safe — no queuing needed.
-    static OSStatus callback(EventHandlerCallRef, EventRef event, void *userData)
+    // modifier-tap mode
+    CFMachPortRef tap = nullptr;
+    CFRunLoopSourceRef tapSource = nullptr;
+    CGKeyCode tapKeyCode = 0;
+    bool tapPending = false; // target modifier is down, no other key seen
+
+    static OSStatus hotKeyCallback(EventHandlerCallRef, EventRef event, void *userData)
     {
         auto *impl = static_cast<Impl *>(userData);
-
         EventHotKeyID hkID;
         GetEventParameter(event, kEventParamDirectObject, typeEventHotKeyID, nullptr,
                            sizeof(hkID), nullptr, &hkID);
-
         if (hkID.signature == kHotKeySignature && hkID.id == kHotKeyId)
             emit impl->owner->activated();
-
         return noErr;
+    }
+
+    // Tap-detection: target modifier pressed then released with nothing else
+    // in between. Any other keypress or modifier change cancels the pending
+    // tap, so holding right-Cmd for a Cmd+C etc never fires.
+    static CGEventRef tapCallback(CGEventTapProxy, CGEventType type, CGEventRef event, void *userData)
+    {
+        auto *impl = static_cast<Impl *>(userData);
+
+        if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+            if (impl->tap)
+                CGEventTapEnable(impl->tap, true);
+            return event;
+        }
+
+        if (type == kCGEventFlagsChanged) {
+            const CGKeyCode code = CGKeyCode(CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode));
+            if (code == impl->tapKeyCode) {
+                // Down or up? Down = some modifier flag newly present.
+                // Simplest reliable check: pending toggles on alternate events
+                // for this keycode, cancelled by anything else in between.
+                if (!impl->tapPending) {
+                    impl->tapPending = true;
+                } else {
+                    impl->tapPending = false;
+                    emit impl->owner->activated();
+                }
+            } else {
+                impl->tapPending = false; // some other modifier moved
+            }
+        } else if (type == kCGEventKeyDown) {
+            impl->tapPending = false; // modifier is being used as a chord
+        }
+
+        return event; // listen-only: never swallow
     }
 };
 
 GlobalHotkey::GlobalHotkey(QObject *parent)
     : QObject(parent)
-    , m_impl(new Impl{this, nullptr, nullptr})
+    , m_impl(new Impl{this})
 {
 }
 
@@ -124,41 +174,44 @@ GlobalHotkey::~GlobalHotkey()
     delete m_impl;
 }
 
-bool GlobalHotkey::setSequence(const QKeySequence &seq)
+bool GlobalHotkey::isSupported(const QKeySequence &seq) const
 {
-    if (seq.isEmpty())
-        return false;
+    return carbonKeyCode(seq[0].key()) >= 0;
+}
 
-    const QKeySequence old = m_seq;
-    const bool wasRegistered = m_registered;
+bool GlobalHotkey::registerNative()
+{
+    if (m_tapMode) {
+        // Listen-only keyboard tap — needs Accessibility trust.
+        if (!AXIsProcessTrusted())
+            return false;
 
-    unregisterNative();
-    m_registered = false;
+        m_impl->tapKeyCode = rightModKeyCode(m_modKey);
+        m_impl->tapPending = false;
 
-    if (registerNative(seq)) {
-        m_seq = seq;
-        m_registered = true;
+        const CGEventMask mask = CGEventMaskBit(kCGEventFlagsChanged)
+                               | CGEventMaskBit(kCGEventKeyDown);
+        m_impl->tap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap,
+                                       kCGEventTapOptionListenOnly, mask,
+                                       &Impl::tapCallback, m_impl);
+        if (!m_impl->tap)
+            return false;
+
+        m_impl->tapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, m_impl->tap, 0);
+        CFRunLoopAddSource(CFRunLoopGetMain(), m_impl->tapSource, kCFRunLoopCommonModes);
+        CGEventTapEnable(m_impl->tap, true);
         return true;
     }
 
-    // Roll back so a rejected combo doesn't leave the user with nothing.
-    if (wasRegistered && registerNative(old)) {
-        m_seq = old;
-        m_registered = true;
-    }
-    return false;
-}
-
-bool GlobalHotkey::registerNative(const QKeySequence &seq)
-{
-    const QKeyCombination combo = seq[0];
+    // Combo mode via Carbon.
+    const QKeyCombination combo = m_seq[0];
     const int keyCode = carbonKeyCode(combo.key());
     if (keyCode < 0)
         return false;
 
     if (!m_impl->handlerRef) {
         EventTypeSpec spec{kEventClassKeyboard, kEventHotKeyPressed};
-        InstallApplicationEventHandler(&GlobalHotkey::Impl::callback, 1, &spec,
+        InstallApplicationEventHandler(&Impl::hotKeyCallback, 1, &spec,
                                         m_impl, &m_impl->handlerRef);
     }
 
@@ -180,6 +233,15 @@ void GlobalHotkey::unregisterNative()
         UnregisterEventHotKey(m_impl->hotKeyRef);
         m_impl->hotKeyRef = nullptr;
     }
+    if (m_impl->tap) {
+        CGEventTapEnable(m_impl->tap, false);
+        CFRunLoopRemoveSource(CFRunLoopGetMain(), m_impl->tapSource, kCFRunLoopCommonModes);
+        CFRelease(m_impl->tapSource);
+        CFRelease(m_impl->tap);
+        m_impl->tapSource = nullptr;
+        m_impl->tap = nullptr;
+    }
+    m_impl->tapPending = false;
 }
 
 void GlobalHotkey::unregisterHotkey()

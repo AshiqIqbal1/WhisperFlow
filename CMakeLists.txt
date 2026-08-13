@@ -87,6 +87,7 @@ qt_add_executable(Whisperlet
     src/ui/recordingpill.h
     src/ui/recordingpill.cpp
     src/platform/globalhotkey.h
+    src/platform/globalhotkey_common.cpp
     src/platform/textinjector.h
 )
 

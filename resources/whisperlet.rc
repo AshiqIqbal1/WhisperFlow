@@ -1,0 +1,2 @@
+// Windows EXE icon
+IDI_ICON1 ICON "../assets/whisperlet.ico"

@@ -1,7 +1,9 @@
-// Windows backend for GlobalHotkey — Win32 RegisterHotKey + a Qt native
-// event filter to catch the WM_HOTKEY message. RegisterHotKey with a null
-// HWND posts the message to the registering thread's queue, which Qt's
-// event dispatcher drains, so the filter sees it on the GUI thread.
+// Windows backend for GlobalHotkey.
+//
+// Combo mode: Win32 RegisterHotKey + a Qt native event filter for WM_HOTKEY.
+// Modifier-tap mode: bare modifiers can't be registered as hotkeys, so a
+// WH_KEYBOARD_LL low-level hook watches for the target modifier being
+// pressed and released with no other key in between. No permission needed.
 #include "globalhotkey.h"
 
 #include <QAbstractNativeEventFilter>
@@ -13,7 +15,6 @@ namespace {
 
 constexpr int kHotKeyId = 0x5746; // 'WF'
 
-// Qt logical key -> Win32 virtual-key code. Returns -1 when unsupported.
 int winVirtualKey(Qt::Key key)
 {
     if (key >= Qt::Key_A && key <= Qt::Key_Z)
@@ -35,7 +36,7 @@ int winVirtualKey(Qt::Key key)
 
 UINT winModifiers(Qt::KeyboardModifiers mods)
 {
-    UINT native = MOD_NOREPEAT; // no machine-gun toggling while held
+    UINT native = MOD_NOREPEAT;
     if (mods & Qt::ControlModifier) native |= MOD_CONTROL;
     if (mods & Qt::ShiftModifier)   native |= MOD_SHIFT;
     if (mods & Qt::AltModifier)     native |= MOD_ALT;
@@ -43,32 +44,77 @@ UINT winModifiers(Qt::KeyboardModifiers mods)
     return native;
 }
 
+DWORD rightModVk(GlobalHotkey::ModKey key)
+{
+    switch (key) {
+    case GlobalHotkey::ModKey::RightCmd:   return VK_RWIN;
+    case GlobalHotkey::ModKey::RightAlt:   return VK_RMENU;
+    case GlobalHotkey::ModKey::RightShift: return VK_RSHIFT;
+    case GlobalHotkey::ModKey::RightCtrl:  return VK_RCONTROL;
+    }
+    return 0;
+}
+
 } // namespace
 
 struct GlobalHotkey::Impl : public QAbstractNativeEventFilter
 {
     GlobalHotkey *owner = nullptr;
+    bool comboRegistered = false;
     bool filterInstalled = false;
+
+    HHOOK hook = nullptr;
+    DWORD tapVk = 0;
+    bool tapPending = false;
+
+    // WH_KEYBOARD_LL callbacks get no user pointer — single-instance static.
+    static Impl *s_instance;
 
     bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *) override
     {
         if (eventType != "windows_generic_MSG")
             return false;
-
         MSG *msg = static_cast<MSG *>(message);
         if (msg->message == WM_HOTKEY && msg->wParam == kHotKeyId) {
             emit owner->activated();
-            return true; // swallow it — no one else needs this message
+            return true;
         }
         return false;
     }
+
+    static LRESULT CALLBACK hookProc(int code, WPARAM wParam, LPARAM lParam)
+    {
+        if (code == HC_ACTION && s_instance && s_instance->hook) {
+            auto *kb = reinterpret_cast<KBDLLHOOKSTRUCT *>(lParam);
+            const bool down = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+            const bool up = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
+
+            if (kb->vkCode == s_instance->tapVk) {
+                if (down) {
+                    s_instance->tapPending = true;
+                } else if (up && s_instance->tapPending) {
+                    s_instance->tapPending = false;
+                    // Hook runs on the GUI thread's message loop, but keep
+                    // the emission out of the hook callback itself.
+                    QMetaObject::invokeMethod(s_instance->owner, "activated",
+                                              Qt::QueuedConnection);
+                }
+            } else if (down) {
+                s_instance->tapPending = false; // chorded with something else
+            }
+        }
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
 };
+
+GlobalHotkey::Impl *GlobalHotkey::Impl::s_instance = nullptr;
 
 GlobalHotkey::GlobalHotkey(QObject *parent)
     : QObject(parent)
     , m_impl(new Impl)
 {
     m_impl->owner = this;
+    Impl::s_instance = m_impl;
 }
 
 GlobalHotkey::~GlobalHotkey()
@@ -76,43 +122,33 @@ GlobalHotkey::~GlobalHotkey()
     unregisterHotkey();
     if (m_impl->filterInstalled && QCoreApplication::instance())
         QCoreApplication::instance()->removeNativeEventFilter(m_impl);
+    Impl::s_instance = nullptr;
     delete m_impl;
 }
 
-bool GlobalHotkey::setSequence(const QKeySequence &seq)
+bool GlobalHotkey::isSupported(const QKeySequence &seq) const
 {
-    if (seq.isEmpty())
-        return false;
-
-    const QKeySequence old = m_seq;
-    const bool wasRegistered = m_registered;
-
-    unregisterNative();
-    m_registered = false;
-
-    if (registerNative(seq)) {
-        m_seq = seq;
-        m_registered = true;
-        return true;
-    }
-
-    // Roll back so a rejected combo doesn't leave the user with nothing.
-    if (wasRegistered && registerNative(old)) {
-        m_seq = old;
-        m_registered = true;
-    }
-    return false;
+    return winVirtualKey(seq[0].key()) >= 0;
 }
 
-bool GlobalHotkey::registerNative(const QKeySequence &seq)
+bool GlobalHotkey::registerNative()
 {
-    const QKeyCombination combo = seq[0];
+    if (m_tapMode) {
+        m_impl->tapVk = rightModVk(m_modKey);
+        m_impl->tapPending = false;
+        m_impl->hook = SetWindowsHookExW(WH_KEYBOARD_LL, &Impl::hookProc,
+                                         GetModuleHandleW(nullptr), 0);
+        return m_impl->hook != nullptr;
+    }
+
+    const QKeyCombination combo = m_seq[0];
     const int vk = winVirtualKey(combo.key());
     if (vk < 0)
         return false;
 
     if (!RegisterHotKey(nullptr, kHotKeyId, winModifiers(combo.keyboardModifiers()), UINT(vk)))
         return false;
+    m_impl->comboRegistered = true;
 
     if (!m_impl->filterInstalled) {
         QCoreApplication::instance()->installNativeEventFilter(m_impl);
@@ -123,7 +159,15 @@ bool GlobalHotkey::registerNative(const QKeySequence &seq)
 
 void GlobalHotkey::unregisterNative()
 {
-    UnregisterHotKey(nullptr, kHotKeyId);
+    if (m_impl->comboRegistered) {
+        UnregisterHotKey(nullptr, kHotKeyId);
+        m_impl->comboRegistered = false;
+    }
+    if (m_impl->hook) {
+        UnhookWindowsHookEx(m_impl->hook);
+        m_impl->hook = nullptr;
+    }
+    m_impl->tapPending = false;
 }
 
 void GlobalHotkey::unregisterHotkey()

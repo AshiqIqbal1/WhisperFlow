@@ -54,8 +54,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Custom chrome: hide the OS title bar, TitleBar below provides logo,
     // drag area and window buttons. The status bar's size grip keeps the
-    // window resizable.
+    // window resizable. Translucency lets #root paint rounded corners.
     setWindowFlag(Qt::FramelessWindowHint, true);
+    setAttribute(Qt::WA_TranslucentBackground, true);
 
     m_models = new ModelManager(this);
     m_recorder = new AudioRecorder(this);
@@ -90,7 +91,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_status = new QLabel(this);
     m_status->setObjectName(QStringLiteral("statusLabel"));
     statusBar()->addWidget(m_status);
-    statusBar()->setStyleSheet(QStringLiteral("QStatusBar{background:#141416;border-top:1px solid #26262A;}"));
+    // The status bar sits BELOW the central widget, so it owns the window's
+    // bottom corners — round them here, #root rounds only the top pair.
+    statusBar()->setStyleSheet(QStringLiteral(
+        "QStatusBar{background:#141416;border-top:1px solid #26262A;"
+        "border-bottom-left-radius:12px;border-bottom-right-radius:12px;}"));
 
     m_statusTimer = new QTimer(this);
     m_statusTimer->setSingleShot(true);
@@ -154,12 +159,20 @@ MainWindow::MainWindow(QWidget *parent)
             m_dictating = !isActiveWindow();
         toggleRecording();
     });
-    const QString savedCombo = QSettings().value(QStringLiteral("globalHotkey")).toString();
-    const QKeySequence combo = savedCombo.isEmpty()
-        ? GlobalHotkey::defaultSequence()
-        : QKeySequence(savedCombo, QKeySequence::PortableText);
-    if (!m_hotkey->setSequence(combo) && !m_hotkey->setSequence(GlobalHotkey::defaultSequence()))
-        flashStatus(tr("Global hotkey unavailable (in use by another app)"));
+    QSettings settings;
+    if (settings.value(QStringLiteral("hotkeyMode")).toString() == QStringLiteral("tap")) {
+        const auto key = GlobalHotkey::ModKey(
+            settings.value(QStringLiteral("modTapKey"), int(GlobalHotkey::ModKey::RightCmd)).toInt());
+        if (!m_hotkey->setModifierTap(key))
+            m_hotkey->setSequence(GlobalHotkey::defaultSequence()); // e.g. Accessibility not granted yet
+    } else {
+        const QString savedCombo = settings.value(QStringLiteral("globalHotkey")).toString();
+        const QKeySequence combo = savedCombo.isEmpty()
+            ? GlobalHotkey::defaultSequence()
+            : QKeySequence(savedCombo, QKeySequence::PortableText);
+        if (!m_hotkey->setSequence(combo) && !m_hotkey->setSequence(GlobalHotkey::defaultSequence()))
+            flashStatus(tr("Global hotkey unavailable (in use by another app)"));
+    }
     refreshHint();
 
     // Restore previous sessions' transcripts.
@@ -290,14 +303,18 @@ QWidget *MainWindow::buildFooter()
 
 void MainWindow::openSettings()
 {
-    // Mute hotkey activations while the dialog is open. Without this,
-    // pressing the current combo inside the shortcut editor raised the
-    // window, yanked focus out of the field mid-edit, and the combo
-    // appeared to "reset itself" back to the old value.
-    QSignalBlocker muteHotkey(m_hotkey);
-
+    // Release the OS hotkey registration while the dialog is open. A
+    // registered combo is consumed by the OS before the shortcut editor
+    // field ever sees it (worst on Windows, where WM_HOTKEY eats the
+    // keystroke entirely) — which made the editor look like it kept
+    // resetting to the old combo. setSequence() during suspension just
+    // stores the combo; resume() re-registers whatever is current.
+    m_hotkey->suspend();
     SettingsDialog dialog(m_models, m_hotkey, this);
     dialog.exec();
+    if (!m_hotkey->resume())
+        flashStatus(tr("Shortcut %1 is in use by another app — pick a different one")
+                        .arg(m_hotkey->comboLabel()));
     refreshHint(); // combo may have changed
 }
 

@@ -87,10 +87,14 @@ jobs:
         with:
           merge-multiple: true
 
+      - name: Checksums
+        run: sha256sum Whisperlet-macos-arm64.dmg Whisperlet-windows-x64.zip > SHA256SUMS.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             Whisperlet-macos-arm64.dmg
             Whisperlet-windows-x64.zip
+            SHA256SUMS.txt
           generate_release_notes: true

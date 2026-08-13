@@ -6,6 +6,7 @@
 
 class GlobalHotkey;
 class ModelManager;
+class QComboBox;
 class QKeySequenceEdit;
 class QLabel;
 class QProgressBar;
@@ -45,6 +46,9 @@ private:
     ModelManager *m_models = nullptr;
     GlobalHotkey *m_hotkey = nullptr;
     QKeySequenceEdit *m_hotkeyEdit = nullptr;
+    QRadioButton *m_comboRadio = nullptr;
+    QRadioButton *m_tapRadio = nullptr;
+    QComboBox *m_modCombo = nullptr;
     QLabel *m_hotkeyStatus = nullptr;
     QMap<QString, Row> m_rows;
 };

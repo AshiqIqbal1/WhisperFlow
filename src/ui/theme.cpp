@@ -9,8 +9,13 @@ QWidget {
     font-size: 14px;
 }
 
-QMainWindow, #root {
+QMainWindow {
+    background: transparent;
+}
+#root {
     background: #141416;
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
 }
 
 /* ---- search ---- */

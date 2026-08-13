@@ -4,47 +4,68 @@
 #include <QKeySequence>
 #include <QObject>
 
-// Cross-platform "works even when the app isn't focused" hotkey.
-// Backed by Carbon's RegisterEventHotKey on macOS (globalhotkey_mac.cpp)
-// and Win32's RegisterHotKey (globalhotkey_win.cpp); CMakeLists compiles in
-// whichever backend matches the platform.
+// Cross-platform "works even when the app isn't focused" hotkey, with two
+// trigger styles:
 //
-// The combo is remappable: setSequence() re-registers on the fly and
-// returns false (keeping the previous registration) if the OS refuses the
-// combo or we can't translate the key to a native code. Write "Ctrl+Shift+R"
-// style portable strings — Qt maps Ctrl to Cmd on macOS automatically.
+//  1. Key combination ("Ctrl+Shift+R") — Carbon RegisterEventHotKey on
+//     macOS, Win32 RegisterHotKey on Windows.
+//  2. Single modifier TAP (press+release right-Cmd alone, OpenSuperWhisper
+//     style) — bare modifiers can't be registered as hotkeys, so this uses
+//     a listen-only CGEventTap on macOS (needs Accessibility permission,
+//     same one dictation uses) and a WH_KEYBOARD_LL hook on Windows.
+//
+// setSequence()/setModifierTap() switch the mode. While suspended (shortcut
+// editor open) changes are stored and registration is deferred to resume().
 class GlobalHotkey : public QObject
 {
     Q_OBJECT
 
 public:
+    enum class ModKey {
+        RightCmd,   // ⌘ on mac, Win key on Windows
+        RightAlt,   // ⌥ on mac
+        RightShift,
+        RightCtrl,
+    };
+
     explicit GlobalHotkey(QObject *parent = nullptr);
     ~GlobalHotkey() override;
 
     static QKeySequence defaultSequence() { return QKeySequence(QStringLiteral("Ctrl+Shift+R")); }
+    static QString modKeyLabel(ModKey key);
 
-    // Registers `seq` (first chord only), replacing any current registration.
-    // On failure the old combo stays active and this returns false.
     bool setSequence(const QKeySequence &seq);
+    bool setModifierTap(ModKey key);
+
+    bool isModifierTapMode() const { return m_tapMode; }
     QKeySequence sequence() const { return m_seq; }
+    ModKey modifierKey() const { return m_modKey; }
+
+    // Native-looking label for the current trigger, e.g. "⌘⇧R" or "Right ⌥".
+    QString comboLabel() const;
+
+    void suspend();
+    bool resume(); // false if the stored trigger failed to re-register
 
     void unregisterHotkey();
-
-    // Native-looking label for UI hints: "⌘⇧R" on mac, "Ctrl+Shift+R" on win.
-    QString comboLabel() const { return m_seq.toString(QKeySequence::NativeText); }
 
 signals:
     void activated();
 
 private:
-    // Platform backend: register exactly this combination, or fail cleanly.
-    bool registerNative(const QKeySequence &seq);
+    // Backends: register/unregister whatever the current mode says.
+    bool registerNative();
     void unregisterNative();
+    bool isSupported(const QKeySequence &seq) const;
+    bool applyCurrent(); // shared bookkeeping around registerNative()
 
     struct Impl;
     Impl *m_impl = nullptr;
     QKeySequence m_seq;
+    ModKey m_modKey = ModKey::RightCmd;
+    bool m_tapMode = false;
     bool m_registered = false;
+    bool m_suspended = false;
 };
 
 #endif // GLOBALHOTKEY_H

@@ -6,6 +6,7 @@
 #include "theme.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QGridLayout>
 #include <QKeySequenceEdit>
@@ -112,8 +113,15 @@ QPushButton:disabled { color: #5E5E66; background: #222226; }
     hotkeyHeading->setStyleSheet(QStringLiteral("font-size: 16px; font-weight: 600;"));
     layout->addWidget(hotkeyHeading);
 
-    auto *hotkeyRow = new QHBoxLayout;
-    hotkeyRow->setSpacing(10);
+    // Two trigger styles: a key combination, or a single right-side
+    // modifier tapped on its own (OpenSuperWhisper style).
+    m_comboRadio = new QRadioButton(tr("Key combination"), this);
+    m_tapRadio = new QRadioButton(tr("Single modifier key"), this);
+    (m_hotkey->isModifierTapMode() ? m_tapRadio : m_comboRadio)->setChecked(true);
+
+    auto *comboRow = new QHBoxLayout;
+    comboRow->setSpacing(10);
+    comboRow->addWidget(m_comboRadio);
 
     m_hotkeyEdit = new QKeySequenceEdit(this);
     m_hotkeyEdit->setMaximumSequenceLength(1);
@@ -123,15 +131,56 @@ QPushButton:disabled { color: #5E5E66; background: #222226; }
         "QLineEdit{background:#26262A;border:1px solid #3A3A42;border-radius:8px;padding:6px 10px;}"));
     connect(m_hotkeyEdit, &QKeySequenceEdit::editingFinished,
             this, &SettingsDialog::onHotkeyEdited);
-    hotkeyRow->addWidget(m_hotkeyEdit, 1);
+    comboRow->addWidget(m_hotkeyEdit, 1);
 
     auto *resetBtn = new QPushButton(tr("Reset"), this);
     connect(resetBtn, &QPushButton::clicked, this, [this] {
+        m_comboRadio->setChecked(true);
         m_hotkeyEdit->setKeySequence(GlobalHotkey::defaultSequence());
         onHotkeyEdited();
     });
-    hotkeyRow->addWidget(resetBtn);
-    layout->addLayout(hotkeyRow);
+    comboRow->addWidget(resetBtn);
+    layout->addLayout(comboRow);
+
+    auto *tapRow = new QHBoxLayout;
+    tapRow->setSpacing(10);
+    tapRow->addWidget(m_tapRadio);
+
+    m_modCombo = new QComboBox(this);
+    m_modCombo->addItem(GlobalHotkey::modKeyLabel(GlobalHotkey::ModKey::RightCmd),
+                        int(GlobalHotkey::ModKey::RightCmd));
+    m_modCombo->addItem(GlobalHotkey::modKeyLabel(GlobalHotkey::ModKey::RightAlt),
+                        int(GlobalHotkey::ModKey::RightAlt));
+    m_modCombo->addItem(GlobalHotkey::modKeyLabel(GlobalHotkey::ModKey::RightShift),
+                        int(GlobalHotkey::ModKey::RightShift));
+    m_modCombo->addItem(GlobalHotkey::modKeyLabel(GlobalHotkey::ModKey::RightCtrl),
+                        int(GlobalHotkey::ModKey::RightCtrl));
+    m_modCombo->setCurrentIndex(m_modCombo->findData(int(m_hotkey->modifierKey())));
+    tapRow->addWidget(m_modCombo, 1);
+    layout->addLayout(tapRow);
+
+    auto applyTapChoice = [this] {
+        if (!m_tapRadio->isChecked())
+            return;
+        const auto key = GlobalHotkey::ModKey(m_modCombo->currentData().toInt());
+        if (m_hotkey->setModifierTap(key)) {
+            QSettings s;
+            s.setValue(QStringLiteral("hotkeyMode"), QStringLiteral("tap"));
+            s.setValue(QStringLiteral("modTapKey"), int(key));
+            m_hotkeyStatus->setText(tr("Tap %1 on its own to start/stop — active when "
+                                       "you close Settings. On macOS this needs the "
+                                       "Accessibility permission.")
+                                        .arg(m_hotkey->comboLabel()));
+        }
+    };
+    connect(m_tapRadio, &QRadioButton::toggled, this, [applyTapChoice](bool on) {
+        if (on) applyTapChoice();
+    });
+    connect(m_modCombo, &QComboBox::currentIndexChanged, this,
+            [applyTapChoice](int) { applyTapChoice(); });
+    connect(m_comboRadio, &QRadioButton::toggled, this, [this](bool on) {
+        if (on) onHotkeyEdited();
+    });
 
     m_hotkeyStatus = new QLabel(this);
     m_hotkeyStatus->setObjectName(QStringLiteral("cardMeta"));
@@ -195,6 +244,9 @@ void SettingsDialog::refreshRow(const QString &id)
 
 void SettingsDialog::onHotkeyEdited()
 {
+    if (!m_comboRadio->isChecked())
+        return;
+
     const QKeySequence seq = m_hotkeyEdit->keySequence();
 
     // Empty (user hit the clear button) — keep the current one.
@@ -213,12 +265,13 @@ void SettingsDialog::onHotkeyEdited()
     }
 
     if (m_hotkey->setSequence(seq)) {
-        QSettings().setValue(QStringLiteral("globalHotkey"),
-                             seq.toString(QKeySequence::PortableText));
-        m_hotkeyStatus->setText(tr("Shortcut set to %1.").arg(m_hotkey->comboLabel()));
+        QSettings s;
+        s.setValue(QStringLiteral("hotkeyMode"), QStringLiteral("combo"));
+        s.setValue(QStringLiteral("globalHotkey"), seq.toString(QKeySequence::PortableText));
+        m_hotkeyStatus->setText(tr("Shortcut set to %1 — active when you close Settings.")
+                                    .arg(m_hotkey->comboLabel()));
     } else {
-        m_hotkeyStatus->setText(tr("⚠ Couldn't register that combo (unsupported key or "
-                                   "already taken by another app). Kept %1.")
+        m_hotkeyStatus->setText(tr("⚠ That key can't be used as a global shortcut. Kept %1.")
                                     .arg(m_hotkey->comboLabel()));
         m_hotkeyEdit->setKeySequence(m_hotkey->sequence());
     }
