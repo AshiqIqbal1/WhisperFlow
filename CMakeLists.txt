@@ -30,6 +30,19 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(whisper_cpp)
 
+# ggml kernels are 10-50x slower unoptimized, which makes a Debug build of
+# the app feel broken (a 5s clip taking a minute on Tiny). We never debug
+# INTO whisper, so force optimization on it even in Debug configs.
+# MSVC is excluded: /O2 clashes with the /RTC1 flag CMake adds to Debug —
+# on the Windows laptop just build the Release config for real use.
+if(NOT MSVC)
+    foreach(ggml_target IN ITEMS whisper ggml ggml-base ggml-cpu)
+        if(TARGET ${ggml_target})
+            target_compile_options(${ggml_target} PRIVATE $<$<CONFIG:Debug>:-O2>)
+        endif()
+    endforeach()
+endif()
+
 qt_add_executable(WhisperFlow
     WIN32 MACOSX_BUNDLE
     main.cpp

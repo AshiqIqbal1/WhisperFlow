@@ -95,6 +95,8 @@ bool AudioRecorder::start()
 
     m_samples.clear();
     m_pending.clear();
+    m_smoothedLevel = 0.0;
+    m_levelClock.start();
     connect(m_device, &QIODevice::readyRead, this, &AudioRecorder::onReadyRead);
     return true;
 }
@@ -136,7 +138,14 @@ void AudioRecorder::onReadyRead()
     for (size_t i = before; i < m_samples.size(); ++i)
         sumSq += double(m_samples[i]) * double(m_samples[i]);
     const double rms = std::sqrt(sumSq / double(m_samples.size() - before));
-    emit levelChanged(std::clamp(rms * 4.0, 0.0, 1.0));
+
+    // EMA so the ring breathes instead of strobing at audio-chunk rate;
+    // emit at most every ~50ms to keep repaints off the hot path.
+    m_smoothedLevel = 0.75 * m_smoothedLevel + 0.25 * std::clamp(rms * 4.0, 0.0, 1.0);
+    if (m_levelClock.elapsed() >= 50) {
+        m_levelClock.restart();
+        emit levelChanged(m_smoothedLevel);
+    }
 }
 
 std::vector<float> AudioRecorder::stop()

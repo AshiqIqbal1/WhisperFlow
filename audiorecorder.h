@@ -3,6 +3,7 @@
 
 #include <QAudioFormat>
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QObject>
 #include <vector>
 
@@ -48,6 +49,11 @@ private:
     QByteArray m_pending;   // leftover partial sample from the last chunk
     std::vector<float> m_samples;
     QString m_lastError;
+
+    // Level smoothing: raw per-chunk RMS strobes badly at chunk rate, so we
+    // EMA it and emit at most every ~50ms.
+    qreal m_smoothedLevel = 0.0;
+    QElapsedTimer m_levelClock;
 };
 
 #endif // AUDIORECORDER_H
