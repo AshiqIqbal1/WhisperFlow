@@ -18,7 +18,15 @@ void TextInjector::requestPermission()
 
 void TextInjector::pasteIntoActiveApp(const QString &text)
 {
+    const QString previous = QGuiApplication::clipboard()->text();
     QGuiApplication::clipboard()->setText(text);
+
+    // Put whatever the user had copied back once the paste has landed.
+    if (!previous.isEmpty()) {
+        QTimer::singleShot(1000, [previous] {
+            QGuiApplication::clipboard()->setText(previous);
+        });
+    }
 
     QTimer::singleShot(150, [] {
         INPUT inputs[4] = {};

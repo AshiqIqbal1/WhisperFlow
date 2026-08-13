@@ -3,8 +3,11 @@
 
 #include "modelcatalog.h"
 
+#include <QCryptographicHash>
 #include <QMap>
 #include <QObject>
+
+#include <memory>
 
 class QFile;
 class QNetworkAccessManager;
@@ -48,6 +51,8 @@ private:
         QNetworkReply *reply = nullptr;
         QFile *file = nullptr;
         QString tmpPath;
+        // Hashed incrementally as chunks stream in, checked on finish.
+        std::shared_ptr<QCryptographicHash> hash;
     };
 
     QNetworkAccessManager *m_net = nullptr;

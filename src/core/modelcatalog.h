@@ -13,6 +13,7 @@ struct ModelInfo
     QString description;  // shown as a subtitle / tooltip
     QString filename;     // "ggml-tiny.bin" — also the on-disk cache filename
     qint64  approxBytes;  // for the download progress bar and free-space checks
+    QString sha256;       // pinned upstream hash; downloads failing it are discarded
 };
 
 namespace ModelCatalog {

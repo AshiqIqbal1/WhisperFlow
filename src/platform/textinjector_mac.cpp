@@ -26,6 +26,7 @@ void TextInjector::requestPermission()
 
 void TextInjector::pasteIntoActiveApp(const QString &text)
 {
+    const QString previous = QGuiApplication::clipboard()->text();
     QGuiApplication::clipboard()->setText(text);
 
     // Give the pasteboard a beat to sync before we fire Cmd+V, otherwise the
@@ -44,4 +45,11 @@ void TextInjector::pasteIntoActiveApp(const QString &text)
         CFRelease(vDown);
         CFRelease(vUp);
     });
+
+    // Put whatever the user had copied back once the paste has landed.
+    if (!previous.isEmpty()) {
+        QTimer::singleShot(1000, [previous] {
+            QGuiApplication::clipboard()->setText(previous);
+        });
+    }
 }

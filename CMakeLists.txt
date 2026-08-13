@@ -36,7 +36,8 @@ endif()
 FetchContent_Declare(
     whisper_cpp
     GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp.git
-    GIT_TAG        v1.9.2
+    # v1.9.2, pinned by commit — a tag can be moved upstream, a hash can't.
+    GIT_TAG        306c88f4d1286aec1bf96e544632897886af5501
 )
 FetchContent_MakeAvailable(whisper_cpp)
 

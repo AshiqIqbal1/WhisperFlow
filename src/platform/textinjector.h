@@ -17,6 +17,8 @@ bool canInject();
 void requestPermission();
 
 // Clipboard-set + paste keystroke. Call only when canInject() is true.
+// The previous clipboard text is restored ~1s after the paste, so
+// dictation doesn't clobber whatever the user had copied.
 void pasteIntoActiveApp(const QString &text);
 
 } // namespace TextInjector

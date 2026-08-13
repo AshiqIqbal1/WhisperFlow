@@ -90,12 +90,16 @@ void ModelManager::download(const QString &id)
                           QNetworkRequest::NoLessSafeRedirectPolicy);
 
     QNetworkReply *reply = m_net->get(request);
-    m_downloads.insert(id, {reply, file, tmpPath});
+    m_downloads.insert(id, {reply, file, tmpPath,
+                            std::make_shared<QCryptographicHash>(QCryptographicHash::Sha256)});
 
     connect(reply, &QNetworkReply::readyRead, this, [this, id] {
         auto it = m_downloads.find(id);
-        if (it != m_downloads.end())
-            it->file->write(it->reply->readAll());
+        if (it != m_downloads.end()) {
+            const QByteArray chunk = it->reply->readAll();
+            it->file->write(chunk);
+            it->hash->addData(chunk);
+        }
     });
 
     connect(reply, &QNetworkReply::downloadProgress, this,
@@ -111,8 +115,21 @@ void ModelManager::download(const QString &id)
         QNetworkReply *reply = it->reply;
         QFile *file = it->file;
         const QString tmpPath = it->tmpPath;
-        const bool ok = reply->error() == QNetworkReply::NoError;
-        const QString error = ok ? QString() : reply->errorString();
+        bool ok = reply->error() == QNetworkReply::NoError;
+        QString error = ok ? QString() : reply->errorString();
+
+        // Verify against the hash pinned in the catalog: a file that made it
+        // through TLS but doesn't match upstream is corrupt or tampered —
+        // either way it never reaches the models directory.
+        if (ok) {
+            const ModelInfo *info = ModelCatalog::find(id);
+            const QString got = QString::fromLatin1(it->hash->result().toHex());
+            if (info && !info->sha256.isEmpty() && got != info->sha256) {
+                ok = false;
+                error = tr("Checksum mismatch — the downloaded file does not match "
+                           "the published model. It was discarded; try again.");
+            }
+        }
 
         file->close();
         if (ok) {
